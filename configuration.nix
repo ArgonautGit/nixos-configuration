@@ -32,6 +32,19 @@
     ./modules/tailscale/tailscale.nix
   ];
 
+  system.autoUpgrade = {
+    enable = true;
+    allowReboot = false; # set true if you're okay with automatic reboots when needed
+    dates = "04:00"; # systemd timer schedule
+    # flake users:
+    flake = "/etc/nixos";
+    flags = [
+      "--update-input"
+      "nixpkgs"
+      "--commit-lock-file"
+    ];
+  };
+
   # Git-snapshotting nixos-rebuild wrapper (see modules/rebuild/rebuild.nix).
   # flakeName defaults to networking.hostName ("nixos"), which matches
   # nixosConfigurations.nixos in flake.nix.
