@@ -144,7 +144,7 @@
 
   hardware.bluetooth.enable = true;
   hardware.bluetooth.powerOnBoot = true;
-  services.blueman.enable = true; # GUI/tray applet; skip if your DE (GNOME/KDE) has its own
+  # services.blueman.enable = true; # GUI/tray applet; skip if your DE (GNOME/KDE) has its own
 
   ############### HARDWARE DEPENDENT ###############
   # Enable hardware acceleration.
