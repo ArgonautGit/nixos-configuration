@@ -7,6 +7,8 @@ export interface Verdict {
 	confidence: "high" | "medium" | "low";
 	reason: string;
 	reviewerModel?: string;
+	/** raw reviewer reply (truncated) — kept for diagnosis of parse failures */
+	raw?: string;
 	// where the verdict came from
 	source: "reviewer" | "static-allow" | "static-deny" | "fail-closed" | "user" | "not-configured";
 }

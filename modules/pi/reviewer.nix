@@ -39,13 +39,11 @@
         pattern = "^(ls|cat|head|tail|rg|grep|find|git (status|diff|log|show))\\b";
       }
     ];
-    alwaysDeny = [
-      {
-        tool = "bash";
-        pattern = "\\brm\\s+-rf\\s+(/|~)\\b";
-      }
-    ];
-    # alwaysDeny matches that should ALSO stop the agent entirely:
+    # Static deny layer removed per user decision (2026-08-31): the reviewer LLM
+    # is the sole gate for non-allowlisted calls. Set rules here to reintroduce a
+    # deterministic floor, e.g. { tool = "bash"; pattern = "--no-preserve-root"; }.
+    alwaysDeny = [];
+    # (denyTerminate is moot while alwaysDeny is empty; kept for schema stability)
     denyTerminate = [];
 
     contextBudget = {

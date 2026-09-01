@@ -8,6 +8,7 @@ export interface DecisionData {
 	confidence: string;
 	reason: string;
 	reviewerModel?: string;
+	raw?: string;
 	source: string;
 	mode: string;
 	userDecision?: "allow" | "deny";
@@ -31,6 +32,7 @@ export function registerRenderer(pi: ExtensionAPI): void {
 		const box = new Box(1, 1, (text: string) => theme.bg("customMessageBg", text));
 		box.addChild(new Text(theme.fg(color as never, head)));
 		box.addChild(new Text(theme.fg("dim", d.reason)));
+		if (expanded && d.raw) box.addChild(new Text(theme.fg("dim", `raw: ${d.raw}`)));
 		if (d.reviewerModel) box.addChild(new Text(theme.fg("dim", `model: ${d.reviewerModel}`)));
 		if (d.inputSummary) box.addChild(new Text(theme.fg("dim", d.inputSummary)));
 		return box;

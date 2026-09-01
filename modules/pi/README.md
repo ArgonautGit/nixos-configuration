@@ -74,6 +74,23 @@ Options:
 Fail-closed everywhere: reviewer error/timeout/unparseable reply ⇒ deny with an
 explanatory reason (source: `fail-closed`). No reviewer model configured and no
 UI to pick one ⇒ block, telling the agent to have the user run /reviewer-model.
+Fail-closed verdicts are deliberately NOT cached — a retry gets a fresh review.
+
+## Output robustness (how verdicts are made parseable)
+
+Layered, strongest first:
+1. **Structured outputs** — reviewer calls carry a marker in the system prompt;
+   `before_provider_request` attaches `response_format: json_schema` to those
+   payloads only (never the main agent's). Providers with constrained sampling
+   hard-enforce the verdict schema. If a provider rejects it, the call is
+   retried once without it.
+2. **Tolerant parsing** — balanced-brace JSON candidates; invalid-escape
+   sanitization (models quoting regex text like `\\s+` inside `reason` used to
+   break strict JSON); markdown fences; case-insensitive decision; loose
+   field scan; keyword fallback (confidence: low).
+3. **Raw logging** — every reviewer decision entry stores the raw reply
+   (truncated), so a "not a valid verdict" is diagnosable in the transcript
+   (visible when expanding the entry) instead of a mystery.
 
 ## Notes
 

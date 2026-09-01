@@ -19,9 +19,20 @@ import { createState, MODE_LABELS, type Mode, type ReviewerState, type Verdict }
 import { loadConfig, loadRules, type ReviewerConfig } from "./lib/config.ts";
 import { matchesRule, renderInput } from "./lib/context.ts";
 import { pickReviewerModel, cacheKey } from "./lib/picker.ts";
-import { runReviewer } from "./lib/reviewer.ts";
+import { runReviewer, SCHEMA_MARKER } from "./lib/reviewer.ts";
 import { registerRenderer, type DecisionData } from "./lib/entry.ts";
 
+
+const VERDICT_SCHEMA = {
+	type: "object",
+	properties: {
+		decision: { type: "string", enum: ["allow", "deny"] },
+		confidence: { type: "string", enum: ["high", "medium", "low"] },
+		reason: { type: "string" },
+	},
+	required: ["decision", "confidence", "reason"],
+	additionalProperties: false,
+} as const;
 export default function (pi: ExtensionAPI) {
 	const state = createState();
 	let config: ReviewerConfig;
@@ -29,6 +40,25 @@ export default function (pi: ExtensionAPI) {
 	let rulesPath = "";
 
 	registerRenderer(pi);
+
+	// Structured outputs: when an outgoing payload is the reviewer's (marker in
+	// the system-position message only — never the main agent's context), attach
+	// response_format json_schema. Providers with constrained sampling enforce
+	// it; others ignore it and rely on the tolerant parser.
+	pi.on("before_provider_request", (event, _ctx) => {
+		const payload = event.payload as Record<string, unknown> | undefined;
+		if (!payload || typeof payload !== "object" || payload.response_format !== undefined) return undefined;
+		if (!Array.isArray(payload.messages) || typeof payload.system === "string") return undefined;
+		const first = payload.messages[0] as { role?: unknown; content?: unknown } | undefined;
+		if (!first || first.role !== "system") return undefined;
+		const sysText = typeof first.content === "string" ? first.content : JSON.stringify(first.content ?? "");
+		if (!sysText.includes(SCHEMA_MARKER)) return undefined;
+		payload.response_format = {
+			type: "json_schema",
+			json_schema: { name: "tool_review_verdict", strict: true, schema: VERDICT_SCHEMA },
+		};
+		return undefined;
+	});
 
 	function reviewerModelLabel(): string {
 		return state.reviewerModel ? `${state.reviewerModel.provider}/${state.reviewerModel.id}` : "not selected";
@@ -189,7 +219,7 @@ export default function (pi: ExtensionAPI) {
 		let verdict = state.cache.get(key);
 		if (!verdict) {
 			verdict = await runReviewer(ctx, state, config, rules, state.reviewerModel!, toolName, input);
-			state.cache.set(key, verdict);
+			if (verdict.source !== "fail-closed") state.cache.set(key, verdict);
 		}
 
 		logDecision(ctx, {
@@ -199,6 +229,7 @@ export default function (pi: ExtensionAPI) {
 			confidence: verdict.confidence,
 			reason: verdict.reason,
 			reviewerModel: verdict.reviewerModel,
+			raw: verdict.raw,
 			source: verdict.source,
 			mode: state.mode,
 		});
@@ -231,6 +262,7 @@ export default function (pi: ExtensionAPI) {
 				confidence: verdict.confidence,
 				reason: verdict.reason,
 				reviewerModel: verdict.reviewerModel,
+			raw: verdict.raw,
 				source: "user",
 				mode: state.mode,
 				userDecision,
