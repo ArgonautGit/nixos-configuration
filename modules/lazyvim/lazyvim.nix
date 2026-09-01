@@ -19,6 +19,17 @@
         installDependencies = true;
         installRuntimeDependencies = false;
       };
+
+      extras.lang.clangd = {
+        enable = true;
+        installDependencies = true; # clangd + clang-format, codelldb debugger
+        installRuntimeDependencies = false;
+      };
+
+      extras.lang.cmake = {
+        enable = true;
+        installDependencies = true; # cmake-language-server
+      };
     };
   };
 }
