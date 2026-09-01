@@ -14,5 +14,5 @@
     parsec-bin
   ];
 
-  home.sessionVariables.EDITOR = "nvim";
+  systemd.user.sessionVariables.EDITOR = "nvim";
 }
