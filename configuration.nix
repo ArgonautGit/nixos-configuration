@@ -14,6 +14,10 @@
     "flakes"
   ];
 
+  # Override NixOS's built-in default (EDITOR=nano) so everything —
+  # login shells, the Plasma/systemd user session, yazi — uses nvim.
+  environment.sessionVariables.EDITOR = "nvim";
+
   imports = [
     # Include the results of the hardware scan.
     ./hardware-configuration.nix
