@@ -99,19 +99,19 @@
   });
 
   rulesMd = pkgs.writeText "reviewer-rules.md" cfg.rules;
+
+  # The extension must be ONE directory in the store: the .ts files import each
+  # other via relative paths ("./context.ts"), and home-manager file-by-file
+  # sources would scatter them across separate store paths and break resolution.
+  # Also keeps config.json / rules.md co-located for the loader's fallback path.
+  reviewerExtension = pkgs.runCommand "pi-reviewer-extension" { } ''
+    mkdir -p $out/lib
+    cp ${./reviewer}/index.ts $out/index.ts
+    cp ${./reviewer}/lib/*.ts $out/lib/
+    cp ${configJson} $out/config.json
+    cp ${rulesMd} $out/rules.md
+  '';
 in
   lib.mkIf cfg.enable {
-    # Extension code: linked from the immutable store copy (edit the .ts files,
-    # re-copy into /etc/nixos, rebuild to deploy).
-    home.file.".pi/agent/extensions/reviewer/index.ts".source = ./reviewer/index.ts;
-    home.file.".pi/agent/extensions/reviewer/lib/state.ts".source = ./reviewer/lib/state.ts;
-    home.file.".pi/agent/extensions/reviewer/lib/config.ts".source = ./reviewer/lib/config.ts;
-    home.file.".pi/agent/extensions/reviewer/lib/context.ts".source = ./reviewer/lib/context.ts;
-    home.file.".pi/agent/extensions/reviewer/lib/picker.ts".source = ./reviewer/lib/picker.ts;
-    home.file.".pi/agent/extensions/reviewer/lib/reviewer.ts".source = ./reviewer/lib/reviewer.ts;
-    home.file.".pi/agent/extensions/reviewer/lib/entry.ts".source = ./reviewer/lib/entry.ts;
-
-    # Generated behavior config + reviewer rules (declaratively managed).
-    home.file.".pi/agent/extensions/reviewer/config.json".source = configJson;
-    home.file.".pi/agent/extensions/reviewer/rules.md".source = rulesMd;
+    home.file.".pi/agent/extensions/reviewer".source = reviewerExtension;
   }
