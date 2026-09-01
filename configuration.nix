@@ -29,6 +29,7 @@
     ./modules/docker/docker.nix
     ./modules/yazi/yazi.nix
     ./modules/rebuild/rebuild.nix
+    ./modules/tailscale/tailscale.nix
   ];
 
   # Git-snapshotting nixos-rebuild wrapper (see modules/rebuild/rebuild.nix).
