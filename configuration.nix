@@ -146,27 +146,6 @@
   hardware.bluetooth.powerOnBoot = true;
   # services.blueman.enable = true; # GUI/tray applet; skip if your DE (GNOME/KDE) has its own
 
-  ############### HARDWARE DEPENDENT ###############
-  # Enable hardware acceleration.
-  hardware.graphics = {
-    enable = true;
-    extraPackages = with pkgs; [ intel-media-driver ];
-  };
-
-  environment.sessionVariables.LIBVA_DRIVER_NAME = "iHD";
-  # Necessary to make sure this doesn't conflict with `tlp`.
-  services.power-profiles-daemon.enable = false;
-  services.tlp = {
-    enable = true;
-    settings = {
-      CPU_SCALING_GOVERNOR_ON_AC = "performance";
-      CPU_SCALING_GOVERNOR_ON_BAT = "powersave";
-      START_CHARGE_THRESH_BAT0 = 85; # Lenovo supports charge thresholds
-      STOP_CHARGE_THRESH_BAT0 = 90;
-    };
-  };
-  ############### \HARDWARE DEPENDENT ###############
-
   # Some programs need SUID wrappers, can be configured further or are
   # started in user sessions.
   # programs.mtr.enable = true;
