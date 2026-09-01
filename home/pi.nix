@@ -11,7 +11,7 @@
         # "throughput" = most output tokens/sec (best for a coding agent);
         # change to "latency" to optimize time-to-first-token instead.
         sort = {
-          by = "throughput";
+          # by = "throughput";
           partition = "model";
         };
       };

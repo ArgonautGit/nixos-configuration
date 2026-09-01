@@ -2,6 +2,7 @@
 {
   imports = [
     ./pi.nix
+    ../modules/pi/reviewer.nix
   ];
 
   home.stateVersion = "26.05";

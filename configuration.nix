@@ -24,7 +24,13 @@
     ./modules/moonlight-mic/moonlight-mic.nix
     ./modules/docker/docker.nix
     ./modules/yazi/yazi.nix
+    ./modules/rebuild/rebuild.nix
   ];
+
+  # Git-snapshotting nixos-rebuild wrapper (see modules/rebuild/rebuild.nix).
+  # flakeName defaults to networking.hostName ("nixos"), which matches
+  # nixosConfigurations.nixos in flake.nix.
+  programs.rebuild.enable = true;
 
   home-manager.backupFileExtension = "bak";
   home-manager.useGlobalPkgs = true;
