@@ -16,7 +16,7 @@ export interface DecisionData {
 }
 
 export function registerRenderer(pi: ExtensionAPI): void {
-	pi.registerEntryRenderer("reviewer-decision", (entry, _renderCtx, theme) => {
+	pi.registerEntryRenderer("reviewer-decision", (entry, { expanded }, theme) => {
 		const d = entry.data as DecisionData;
 		const mark = d.decision === "allow" ? "✔" : "✘";
 		const color = d.decision === "allow" ? "success" : "error";
@@ -28,13 +28,11 @@ export function registerRenderer(pi: ExtensionAPI): void {
 				: d.source === "fail-closed"
 					? "fail-closed"
 					: d.source;
-		const head = `${mark} reviewer ${d.decision.toUpperCase()} [${d.confidence}] ${d.toolName} (${who}, mode: ${d.mode})`;
+		const head = mark + " reviewer " + d.decision.toUpperCase() + " [" + d.confidence + "] " + d.toolName + " (" + who + ", mode: " + d.mode + ")";
 		const box = new Box(1, 1, (text: string) => theme.bg("customMessageBg", text));
 		box.addChild(new Text(theme.fg(color as never, head)));
 		box.addChild(new Text(theme.fg("dim", d.reason)));
-		if (expanded && d.raw) box.addChild(new Text(theme.fg("dim", `raw: ${d.raw}`)));
-		if (d.reviewerModel) box.addChild(new Text(theme.fg("dim", `model: ${d.reviewerModel}`)));
-		if (d.inputSummary) box.addChild(new Text(theme.fg("dim", d.inputSummary)));
+		if (expanded && d.raw) box.addChild(new Text(theme.fg("dim", "raw: " + d.raw)));
 		return box;
 	});
 }

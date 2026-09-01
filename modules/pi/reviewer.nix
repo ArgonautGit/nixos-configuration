@@ -14,7 +14,8 @@
   pkgs,
   lib,
   ...
-}: let
+}:
+let
   cfg = {
     enable = true;
 
@@ -29,7 +30,7 @@
     sessionPersistence = false;
 
     # Empty list = review every tool call.
-    reviewedTools = [];
+    reviewedTools = [ ];
 
     # Static fast paths (checked before the reviewer runs; regex on rendered JSON input).
     alwaysAllow = [
@@ -42,9 +43,9 @@
     # Static deny layer removed per user decision (2026-08-31): the reviewer LLM
     # is the sole gate for non-allowlisted calls. Set rules here to reintroduce a
     # deterministic floor, e.g. { tool = "bash"; pattern = "--no-preserve-root"; }.
-    alwaysDeny = [];
+    alwaysDeny = [ ];
     # (denyTerminate is moot while alwaysDeny is empty; kept for schema stability)
-    denyTerminate = [];
+    denyTerminate = [ ];
 
     contextBudget = {
       maxMessages = 40;
@@ -60,6 +61,7 @@
         search, git status/diff/log) are fine.
       - Actions that modify files, install things, mutate system or repository state,
         or contact external services must clearly serve the user's most recent request.
+      - Web searches are almost always benign.
 
       ## Environment facts
       - The user runs NixOS. /nix/store is read-only; system configuration lives in
@@ -78,23 +80,34 @@
     '';
   };
 
-  mkRule = r:
-    if r.pattern or null == null
-    then { inherit (r) tool; }
-    else {
-      inherit (r) tool;
-      pattern = r.pattern;
-    };
+  mkRule =
+    r:
+    if r.pattern or null == null then
+      { inherit (r) tool; }
+    else
+      {
+        inherit (r) tool;
+        pattern = r.pattern;
+      };
 
-  configJson = pkgs.writeText "reviewer-config.json" (builtins.toJSON {
-    inherit (cfg) defaultMode reviewerModel reviewerThinking reviewTimeoutMs reviewedTools sessionPersistence;
-    alwaysAllow = map mkRule cfg.alwaysAllow;
-    alwaysDeny = map mkRule cfg.alwaysDeny;
-    denyTerminate = map mkRule cfg.denyTerminate;
-    contextBudget = {
-      inherit (cfg.contextBudget) maxMessages maxChars;
-    };
-  });
+  configJson = pkgs.writeText "reviewer-config.json" (
+    builtins.toJSON {
+      inherit (cfg)
+        defaultMode
+        reviewerModel
+        reviewerThinking
+        reviewTimeoutMs
+        reviewedTools
+        sessionPersistence
+        ;
+      alwaysAllow = map mkRule cfg.alwaysAllow;
+      alwaysDeny = map mkRule cfg.alwaysDeny;
+      denyTerminate = map mkRule cfg.denyTerminate;
+      contextBudget = {
+        inherit (cfg.contextBudget) maxMessages maxChars;
+      };
+    }
+  );
 
   rulesMd = pkgs.writeText "reviewer-rules.md" cfg.rules;
 
@@ -110,6 +123,6 @@
     cp ${rulesMd} $out/rules.md
   '';
 in
-  lib.mkIf cfg.enable {
-    home.file.".pi/agent/extensions/reviewer".source = reviewerExtension;
-  }
+lib.mkIf cfg.enable {
+  home.file.".pi/agent/extensions/reviewer".source = reviewerExtension;
+}
