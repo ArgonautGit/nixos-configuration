@@ -15,4 +15,6 @@
   ];
 
   systemd.user.sessionVariables.EDITOR = "nvim";
+
+  services.ssh-agent.enable = true;
 }
