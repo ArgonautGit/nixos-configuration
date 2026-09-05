@@ -30,6 +30,7 @@
     ./modules/yazi/yazi.nix
     ./modules/rebuild/rebuild.nix
     ./modules/tailscale/tailscale.nix
+    ./modules/chatgpt-desktop/chatgpt-desktop.nix
   ];
 
   system.autoUpgrade = {
