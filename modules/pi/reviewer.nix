@@ -21,7 +21,7 @@ let
 
     # Reviewer model as "provider/id". Leave "" to force interactive selection
     # (the /model-style picker) on first guarded tool call each session.
-    reviewerModel = "openrouter/z-ai/glm-5.3-flash";
+    reviewerModel = "openrouter/~deepseek/deepseek-v4-flash-latest";
     reviewerThinking = "off";
     reviewTimeoutMs = 30000;
 
