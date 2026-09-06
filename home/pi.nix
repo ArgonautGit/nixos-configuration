@@ -1,6 +1,22 @@
 # pi coding agent configuration
 # https://github.com/earendil-works/pi-mono
 { pkgs, ... }:
+let
+  # https://github.com/ttttmr/pi-web-search
+  # Pin and unpack with Nix: no `pi install` or runtime npm downloads.
+  # This release only needs the peer dependencies bundled by pi (>= 0.80.3).
+  # To update: review the release, bump version + tarball hash, then rebuild.
+  webSearchVersion = "1.4.0";
+  webSearchArchive = pkgs.fetchurl {
+    url = "https://registry.npmjs.org/pi-web-search/-/pi-web-search-${webSearchVersion}.tgz";
+    hash = "sha256-v/fVu275TWIz42njTmquZm+G9tUAozCCYj/GHlV47SM=";
+  };
+  webSearch = pkgs.runCommand "pi-web-search-${webSearchVersion}" { } ''
+    mkdir -p "$out"
+    tar -xzf ${webSearchArchive} --strip-components=1 -C "$out"
+    test -f "$out/src/index.ts"
+  '';
+in
 {
   home.packages = [ pkgs.pi-coding-agent ];
 
@@ -18,6 +34,15 @@
     };
   };
 
+  # Dedicated search backend, independent of the conversation model (DeepSeek
+  # and GLM do not support this extension's native-search API). Uses pi's Codex
+  # login; no credentials belong in this file or the Nix store. Search consumes
+  # Codex account usage. Change provider/model here to choose another backend.
+  home.file.".pi/agent/web-search.json".text = builtins.toJSON {
+    provider = "openai-codex";
+    model = "gpt-6-astra";
+  };
+
   # Scoped models: declaratively pin the set of models usable for
   # Ctrl+P cycling and the /scoped-models picker (pi's `enabledModels`
   # setting, matched as `provider/modelId` globs against the model
@@ -31,6 +56,8 @@
     defaultModel = "~deepseek/deepseek-v4-flash-latest";
     defaultThinkingLevel = "xhigh";
     theme = "dark";
+    # Local pi package: its manifest loads src/index.ts directly from the store.
+    packages = [ "${webSearch}" ];
     enabledModels = [
       # deepseek flash latest
       "openrouter/~deepseek/deepseek-v4-flash-latest"
