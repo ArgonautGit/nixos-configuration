@@ -27,6 +27,7 @@
     # ./modules/moonlight/moonlight.nix
     ./modules/moonlight-mic/moonlight-mic.nix
     ./modules/docker/docker.nix
+    ./modules/bambu-studio/bambu-studio.nix
     ./modules/yazi/yazi.nix
     ./modules/tailscale/tailscale.nix
     ./modules/chatgpt-desktop/chatgpt-desktop.nix
