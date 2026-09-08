@@ -9,6 +9,7 @@
  * Commands:
  *   /perm [deny|ask|allow|status]
  *   /reviewer-model
+ *   /reviewer-explain [last|deny|entry-id] [context]
  *
  * Config: config.json + rules.md next to this extension (Nix-managed in production;
  * PI_REVIEWER_CONFIG_DIR env var overrides for dev/testing).
@@ -18,9 +19,9 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createState, MODE_LABELS, type Mode, type ReviewerState, type Verdict } from "./lib/state.ts";
 import { loadConfig, loadRules, type ReviewerConfig } from "./lib/config.ts";
 import { matchesRule, renderInput } from "./lib/context.ts";
-import { pickReviewerModel, cacheKey } from "./lib/picker.ts";
+import { pickReviewerModel } from "./lib/picker.ts";
 import { runReviewer, SCHEMA_MARKER } from "./lib/reviewer.ts";
-import { registerRenderer, type DecisionData } from "./lib/entry.ts";
+import { registerRenderer, registerExplanationCommand, type DecisionData } from "./lib/entry.ts";
 
 
 const VERDICT_SCHEMA = {
@@ -37,9 +38,9 @@ export default function (pi: ExtensionAPI) {
 	const state = createState();
 	let config: ReviewerConfig;
 	let rules = "";
-	let rulesPath = "";
 
 	registerRenderer(pi);
+	registerExplanationCommand(pi, state);
 
 	// Structured outputs: when an outgoing payload is the reviewer's (marker in
 	// the system-position message only — never the main agent's context), attach
@@ -101,20 +102,16 @@ export default function (pi: ExtensionAPI) {
 		for (const w of warnings) ctx.ui.notify(`reviewer config: ${w}`, "warning");
 		const r = loadRules(dir);
 		rules = r.rules;
-		rulesPath = r.path;
 
-		const freshSession = event.reason === "startup" || event.reason === "new" || event.reason === "reload";
-		if (freshSession) {
-			state.mode = config.defaultMode;
-			state.reviewerModel = undefined;
-			state.modelSelectedThisSession = false;
-			state.cache.clear();
-		}
+		state.mode = config.defaultMode;
+		state.reviewerModel = undefined;
+		state.modelSelectedThisSession = false;
+		state.reviewRequests.clear();
 
 		// Optional session-persisted state (mode + model) on resume
 		if (config.sessionPersistence && (event.reason === "resume" || event.reason === "fork")) {
 			try {
-				const entries = ctx.sessionManager.getEntries() as Array<{
+				const entries = ctx.sessionManager.getBranch() as Array<{
 					type?: string;
 					customType?: string;
 					data?: { mode?: Mode; model?: string };
@@ -164,13 +161,15 @@ export default function (pi: ExtensionAPI) {
 		const input = (event.input ?? {}) as Record<string, unknown>;
 		if (config.reviewedTools.length > 0 && !config.reviewedTools.includes(toolName)) return undefined;
 		const rendered = renderInput(input);
+		const serialized = JSON.stringify(input); // Static rules must also see the full input.
 
 		// Hard static deny — applies even in ask mode, no prompt, no reviewer
 		for (const rule of config.alwaysDeny) {
-			if (matchesRule(rule, toolName, rendered)) {
-				const terminate = config.denyTerminate.some((r) => matchesRule(r, toolName, rendered));
+			if (matchesRule(rule, toolName, serialized)) {
+				const terminate = config.denyTerminate.some((r) => matchesRule(r, toolName, serialized));
 				logDecision(ctx, {
 					toolName,
+					toolCallId: event.toolCallId,
 					inputSummary: rendered,
 					decision: "deny",
 					confidence: "high",
@@ -185,7 +184,7 @@ export default function (pi: ExtensionAPI) {
 
 		// Static fast-path allow — no reviewer cost
 		for (const rule of config.alwaysAllow) {
-			if (matchesRule(rule, toolName, rendered)) return undefined;
+			if (matchesRule(rule, toolName, serialized)) return undefined;
 		}
 
 		// Reviewer model must exist before any review can happen
@@ -214,16 +213,15 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 
-		// Reviewer verdict (with per-turn cache)
-		const key = cacheKey(toolName, input);
-		let verdict = state.cache.get(key);
-		if (!verdict) {
-			verdict = await runReviewer(ctx, state, config, rules, state.reviewerModel!, toolName, input);
-			if (verdict.source !== "fail-closed") state.cache.set(key, verdict);
-		}
+		// Never cache permission verdicts: even identical input can have different
+		// authorization or side effects after a user clarification or tool result.
+		const description = pi.getAllTools().find(tool => tool.name === toolName)?.description;
+		const verdict = await runReviewer(ctx, state, config, rules, state.reviewerModel!, toolName, input, description);
 
 		logDecision(ctx, {
 			toolName,
+			toolCallId: event.toolCallId,
+			reviewId: verdict.reviewId,
 			inputSummary: rendered,
 			decision: verdict.decision,
 			confidence: verdict.confidence,
@@ -241,7 +239,7 @@ export default function (pi: ExtensionAPI) {
 				reason: `REVIEWER DENIED this tool call: ${verdict.reason}`,
 				terminate:
 					verdict.source === "static-deny" &&
-					config.denyTerminate.some((r) => matchesRule(r, toolName, rendered)),
+					config.denyTerminate.some((r) => matchesRule(r, toolName, serialized)),
 			};
 		}
 
@@ -257,12 +255,14 @@ export default function (pi: ExtensionAPI) {
 			const userDecision = choice === "Allow" ? "allow" : "deny";
 			logDecision(ctx, {
 				toolName,
+				toolCallId: event.toolCallId,
+				reviewId: verdict.reviewId,
 				inputSummary: rendered,
 				decision: userDecision,
 				confidence: verdict.confidence,
 				reason: verdict.reason,
 				reviewerModel: verdict.reviewerModel,
-			raw: verdict.raw,
+				raw: verdict.raw,
 				source: "user",
 				mode: state.mode,
 				userDecision,

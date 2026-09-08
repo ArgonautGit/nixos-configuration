@@ -1,17 +1,15 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Model } from "@earendil-works/pi-ai";
-import type { ReviewerState } from "./state.ts";
-import { renderInput } from "./context.ts";
+import type { Api, Model } from "@earendil-works/pi-ai";
 
 /**
  * Pick the reviewer model, mirroring the /model picker:
  * scoped models first (same set the built-in model picker offers),
  * otherwise the full available catalogue.
  */
-export async function pickReviewerModel(ctx: ExtensionContext, firstEnable: boolean): Promise<Model | undefined> {
+export async function pickReviewerModel(ctx: ExtensionContext, firstEnable: boolean): Promise<Model<Api> | undefined> {
 	if (!ctx.hasUI) return undefined;
 
-	let models: Model[] = [];
+	let models: Model<Api>[] = [];
 	if (ctx.scopedModels && ctx.scopedModels.length > 0) {
 		models = ctx.scopedModels.map((s) => s.model);
 	} else {
@@ -54,7 +52,7 @@ export async function pickReviewerModel(ctx: ExtensionContext, firstEnable: bool
  *      invalid JSON and defeats strict parsing)
  *   3. decision/confidence/reason fields located loosely (case-insensitive,
  *      missing confidence tolerated)
- *   4. keyword fallback: first standalone allow/deny token in the reply
+ * No keyword fallback: incidental prose containing "allow" is not permission.
  */
 export function parseVerdict(text: string): { decision: "allow" | "deny"; confidence: "high" | "medium" | "low"; reason: string } | undefined {
 	const decisions = new Set(["allow", "deny"]);
@@ -132,14 +130,5 @@ export function parseVerdict(text: string): { decision: "allow" | "deny"; confid
 		if (reason) return { decision: dm[1].toLowerCase() as "allow" | "deny", confidence: "medium", reason };
 	}
 
-	// Keyword fallback — last resort, low confidence
-	const km = text.match(/\b(allow|deny)\b/i);
-	if (km) {
-		return { decision: km[1].toLowerCase() as "allow" | "deny", confidence: "low", reason: text.trim().slice(0, 500) };
-	}
 	return undefined;
-}
-
-export function cacheKey(toolName: string, input: Record<string, unknown>): string {
-	return `${toolName}\u0000${renderInput(input)}`;
 }

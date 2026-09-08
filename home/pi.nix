@@ -15,6 +15,13 @@ let
     mkdir -p "$out"
     tar -xzf ${webSearchArchive} --strip-components=1 -C "$out"
     test -f "$out/src/index.ts"
+    # pi-web-search 1.4.0 hardcodes "none", which GPT-6 Astra rejects (HTTP 400).
+    # Use its lowest supported effort; leave other models unchanged. Remove this
+    # workaround once an upstream release selects a supported effort for Astra.
+    # --replace-fail makes upstream source changes fail visibly during upgrades.
+    substituteInPlace "$out/src/api.ts" --replace-fail \
+      'requestBody.reasoning = { effort: "none" };' \
+      'requestBody.reasoning = { effort: model.id === "gpt-6-astra" ? "low" : "none" };'
   '';
 in
 {

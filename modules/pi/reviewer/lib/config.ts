@@ -3,17 +3,18 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import type { Mode } from "./state.ts";
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 
 export interface AllowDenyRule {
 	tool: string;
-	pattern?: string; // regex (string form) matched against rendered input
+	pattern?: string; // regex matched against complete serialized JSON input
 }
 
 export interface ReviewerConfig {
 	defaultMode: Mode;
 	/** "provider/id" or "" → must be selected interactively on first enable */
 	reviewerModel: string;
-	reviewerThinking: "off" | "minimal" | "low" | "medium" | "high" | "ultrathought";
+	reviewerThinking: ModelThinkingLevel;
 	reviewTimeoutMs: number;
 	/** tools to review; empty list = review everything */
 	reviewedTools: string[];
@@ -45,7 +46,7 @@ export function configDirCandidates(): string[] {
 	const envPath = process.env.PI_REVIEWER_CONFIG_DIR;
 	if (envPath) candidates.push(envPath);
 	try {
-		candidates.push(dirname(fileURLToPath(import.meta.url))); // lib/ → ../
+		candidates.push(dirname(dirname(fileURLToPath(import.meta.url)))); // lib/config.ts → extension root
 	} catch {
 		/* jiti may not provide import.meta.url */
 	}
@@ -100,10 +101,12 @@ export function loadRules(dir: string): { rules: string; path: string } {
 const FALLBACK_RULES = `# Reviewer Rules (fallback — no rules.md found)
 
 - Presume least privilege. Read-only actions are acceptable.
-- Actions that modify files, run installs, mutate system state, or touch
-  anything outside the stated task require clear alignment with the user's
-  most recent request.
-- If intent is unclear, deny with a reason the agent can act on.
+- Use the active task and recent user clarifications to interpret short follow-ups.
+- Ordinary public web searches and harmless search tests are normally allowed;
+  never disclose private data or credentials in queries or URLs.
+- Actions that modify files, run installs or mutate system state require clear
+  alignment with the active task. Deny concrete risks, explicit prohibitions or
+  meaningful scope violations, not merely a different preferred diagnostic query.
 - Never approve destructive, irreversible, or security-sensitive operations
   (deleting data, force-pushes, credential handling, system-wide changes).
 `;
