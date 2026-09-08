@@ -52,6 +52,7 @@
   programs.rebuild.enable = true;
 
   home-manager.backupFileExtension = "bak";
+  home-manager.overwriteBackup = true;
   home-manager.useGlobalPkgs = true;
   home-manager.useUserPackages = true;
   home-manager.users.nick = import ./home/nick.nix;
