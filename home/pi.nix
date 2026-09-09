@@ -39,6 +39,53 @@ in
         };
       };
     };
+
+    # qwen3.8-27b-mtp-80k is served by the local llama.cpp router (see the
+    # llama.cpp entry in ~/.pi/agent/models-store.json). pi's built-in
+    # llama.cpp extension hard-codes reasoning: false for the whole catalog,
+    # so re-enable extended thinking here.
+    #
+    # Qwen3.8's embedded chat template only accepts chat_template_kwargs
+    # (a top-level reasoning_effort is silently ignored by llama.cpp):
+    #   enable_thinking: whether to think at all
+    #   reasoning_effort: "xhigh" (default) | "medium" | "low" — any other
+    #     value makes the template raise (verified against the server: the
+    #     GGUF carries the stock Qwen3.8-27B template).
+    #
+    # This is pi's "chat-template" thinking format: "thinking.enabled"
+    # inserts the boolean, "thinking.effort" inserts the value from
+    # thinkingLevelMap, mapping pi's 7 normal levels onto the 3 the model
+    # supports. modelOverrides is the top-most user-config layer, so it
+    # applies on top of the extension's models and merges into their compat
+    # (keeps supportsDeveloperRole: false, maxTokensField: "max_tokens", etc.).
+    providers."llama.cpp".modelOverrides."qwen3.8-27b-mtp-80k" = {
+      reasoning = true;
+      # The local instance runs with --ctx-size 81920; pin it so pi doesn't
+      # fall back to the training-context default when the catalog report
+      # lacks a live n_ctx (e.g. while the instance is unloaded/sleeping).
+      contextWindow = 81920;
+      maxTokens = 81920;
+      compat = {
+        thinkingFormat = "chat-template";
+        chatTemplateKwargs = {
+          "enable_thinking" = { "$var" = "thinking.enabled"; };
+          "reasoning_effort" = { "$var" = "thinking.effort"; };
+          "preserve_thinking" = true;
+        };
+      };
+      # pi level -> Qwen3.8 reasoning_effort ("low" | "medium" | "xhigh"):
+      # exactly one pi level per model level. Redundant ones are dropped from
+      # the picker via null (minimal folds into low; high and max fold into
+      # xhigh). Off is handled by enable_thinking: false + omitted effort.
+      thinkingLevelMap = {
+        minimal = null;
+        low = "low";
+        medium = "medium";
+        high = null;
+        xhigh = "xhigh";
+        max = null;
+      };
+    };
   };
 
   # Dedicated search backend, independent of the conversation model (DeepSeek
@@ -74,6 +121,9 @@ in
       "openai-codex/gpt-6-astra"
       # glm 5.3
       "openrouter/z-ai/glm-5.3"
+      # local Qwen 3.8 with MTP drafting (see models.json override for the
+      # thinking-level map and the 81,920 ctx pin)
+      "llama.cpp/qwen3.8-27b-mtp-80k"
     ];
     hideThinkingBlock = false;
   };
