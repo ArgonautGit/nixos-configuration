@@ -15,6 +15,8 @@
     gcc-arm-embedded
     ffmpeg
     imagemagick
+    uv
+    python3
   ];
 
   programs.firefox.enable = true;
