@@ -12,6 +12,7 @@
     kdePackages.kate
     signal-desktop
     parsec-bin
+    freecad
   ];
 
   systemd.user.sessionVariables.EDITOR = "nvim";
