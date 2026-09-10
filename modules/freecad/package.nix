@@ -12,10 +12,18 @@ let
 
   # The add-on's 6.1 release needs MCP >= 1.28.1. Keep it on the 1.x SDK;
   # the add-on's 7.x releases require the separate MCP 2.x dependency stack.
-  # Supply the SDK update locally when using older stable nixpkgs, without
-  # importing another flake or changing the host's Python package set.
+  # The fallback updates the SDK recipe tested with nixpkgs' MCP 1.26.0.
+  # Reject older recipes and other major versions (including prereleases),
+  # rather than silently reusing incompatible build dependencies or hooks.
+  # This is local to the package: no extra flake or host-wide Python override.
   mcpSdk =
-    if lib.versionAtLeast ps.mcp.version "1.28.1" && lib.versionOlder ps.mcp.version "2.0" then
+    if lib.versions.major ps.mcp.version != "1" || lib.versionOlder ps.mcp.version "1.26.0" then
+      throw ''
+        freecad-mcp 6.1.0: unsupported nixpkgs MCP SDK recipe ${ps.mcp.version}.
+        Use nixpkgs with an MCP 1.x recipe >= 1.26.0, or override
+        programs.freecadMcp.package with a compatible backend and add-on.
+      ''
+    else if lib.versionAtLeast ps.mcp.version "1.28.1" then
       ps.mcp
     else
       ps.mcp.overridePythonAttrs (old: {
