@@ -110,8 +110,14 @@ in
     defaultModel = "~deepseek/deepseek-v4-flash-latest";
     defaultThinkingLevel = "xhigh";
     theme = "dark";
-    # Local pi package: its manifest loads src/index.ts directly from the store.
-    packages = [ "${webSearch}" ];
+    packages = [
+      # Local package: load src/index.ts directly from the store.
+      "${webSearch}"
+      # pi installs this pinned release + its npm dependencies on first start.
+      # Unlike web-search, this is not an offline/Nix-built dependency closure.
+      # FreeCAD's local connection is configured by modules/freecad/default.nix.
+      "npm:pi-mcp-adapter@2.32.1"
+    ];
     enabledModels = [
       # deepseek flash latest
       "openrouter/~deepseek/deepseek-v4-flash-latest"
