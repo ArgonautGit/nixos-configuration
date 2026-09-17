@@ -9,6 +9,8 @@
 
   home.stateVersion = "26.05";
 
+  # Generate shell startup files so integrations such as Yazi's `y` work.
+  programs.bash.enable = true;
   programs.freecadMcp.enable = true;
 
   home.packages = with pkgs; [
