@@ -11,6 +11,8 @@
       extraPackages = with pkgs; [
         nixd
         nixfmt
+        cmake-format
+        cmake-lint
       ];
       configFiles = ./config;
 
@@ -28,7 +30,9 @@
 
       extras.lang.cmake = {
         enable = true;
-        installDependencies = true; # cmake-language-server
+        # The pinned module references removed python3Packages attributes.
+        # Supply the current CMake formatter/linter packages via extraPackages.
+        installDependencies = false;
       };
     };
   };
