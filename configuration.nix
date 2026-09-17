@@ -32,18 +32,9 @@
     ./modules/chatgpt-desktop/chatgpt-desktop.nix
   ];
 
-  system.autoUpgrade = {
-    enable = true;
-    allowReboot = false; # set true if you're okay with automatic reboots when needed
-    dates = "04:00"; # systemd timer schedule
-    # flake users:
-    flake = "/etc/nixos";
-    flags = [
-      "--update-input"
-      "nixpkgs"
-      "--commit-lock-file"
-    ];
-  };
+  # Update flake.lock and activate rebuilds manually; this checkout may be
+  # on a development branch and must not be deployed unattended.
+  system.autoUpgrade.enable = false;
 
   home-manager.backupFileExtension = "bak";
   home-manager.overwriteBackup = true;
