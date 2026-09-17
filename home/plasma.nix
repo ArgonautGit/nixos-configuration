@@ -65,5 +65,12 @@
     # corner; the old [Effect-DesktopGrid] group no longer exists in Plasma 6.
     configFile."kwinrc"."Effect-overview".BorderActivate = 9;
     configFile."kwinrc"."Effect-overview".GridBorderActivate = 9;
+
+    # Alt+Tab window switcher: [TabBox] DelayTime is the number of
+    # milliseconds KWin waits before it shows the switcher popup. KWin
+    # hardcodes a default of 90 (src/tabbox/tabbox.cpp); 0 shows it
+    # immediately. This changes only *when* the popup appears, not its
+    # animation duration, so no other animation is affected.
+    configFile."kwinrc"."TabBox".DelayTime = 0;
   };
 }
