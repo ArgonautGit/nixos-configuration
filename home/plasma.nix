@@ -7,6 +7,30 @@
 # Agent workflow: rc2nix converts your current ~/.config into a starting
 #   nix run github:nix-community/plasma-manager/trunk
 # then prune and move settings into the higher-level modules below.
+#
+# -- Live reload while iterating ---------------------------------------------
+# A rebuild writes these ~/.config/*rc files but never tells the *running*
+# session to re-read them. To see a change without logging out, reload the
+# part you touched:
+#
+#   KWin effects  (e.g. the [Effect-overview] screen-edge keys below):
+#     qdbus org.kde.KWin /Effects org.kde.kwin.Effects.reconfigureEffect overview
+#     # or every loaded effect at once:
+#     for e in $(qdbus org.kde.KWin /Effects org.kde.kwin.Effects.loadedEffects); do
+#       qdbus org.kde.KWin /Effects org.kde.kwin.Effects.reconfigureEffect "$e"
+#     done
+#
+#   KWin general options  (kwinrc keys outside effects):
+#     qdbus org.kde.KWin /KWin reconfigure
+#
+#   Plasma shell  (panels/widgets, plasmashellrc, ...):
+#     systemctl --user restart plasma-plasmashell
+#
+#   KDE apps  (kate / konsole / okular): just relaunch the app.
+#
+# Gotcha: `qdbus org.kde.KWin /KWin reconfigure` does NOT reload effects
+# (KWin 6.6.6's Workspace::slotReconfigure() never calls effects->reconfigure()),
+# so a changed screen edge or effect setting needs the /Effects call above.
 { ... }:
 {
   programs.plasma = {
@@ -33,6 +57,13 @@
 
     # -- Low-level: set individual keys in any KDE rc file (~/.config/...) --
     # configFile."kdeglobals"."KDE"."SingleClick" = true;
-    # configFile."kwinrc"."Effect-windowview"."BorderActivate" = 9;
+
+    # Stop the top-left screen corner from opening the Overview (the virtual
+    # desktops / activities screen). BorderActivate is an IntList of
+    # ElectricBorder values: 7 = ElectricTopLeft (the default), 9 = ElectricNone
+    # (no border). GridBorderActivate is the desktop-grid view of the same
+    # corner; the old [Effect-DesktopGrid] group no longer exists in Plasma 6.
+    configFile."kwinrc"."Effect-overview".BorderActivate = 9;
+    configFile."kwinrc"."Effect-overview".GridBorderActivate = 9;
   };
 }
