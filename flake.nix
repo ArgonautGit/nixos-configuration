@@ -7,9 +7,14 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     lazyvim.url = "github:pfassina/lazyvim-nix";
+    plasma-manager = {
+      url = "github:nix-community/plasma-manager/trunk";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.home-manager.follows = "home-manager";
+    };
   };
 
-  outputs = { nixpkgs, home-manager, ... }@inputs: {
+  outputs = { nixpkgs, home-manager, plasma-manager, ... }@inputs: {
     nixosConfigurations.nixos = nixpkgs.lib.nixosSystem {
       system = "x86_64-linux";
       specialArgs = { inherit inputs; };
@@ -17,6 +22,10 @@
         ./configuration.nix
         home-manager.nixosModules.home-manager
         { home-manager.extraSpecialArgs = { inherit inputs; }; }
+        # Plasma-manager is a home-manager module, so it's registered as a
+        # sharedModule (imported into every home-manager user's config) rather
+        # than imported through NixOS's top-level `imports`.
+        { home-manager.sharedModules = [ plasma-manager.homeModules.plasma-manager ]; }
       ];
     };
   };
