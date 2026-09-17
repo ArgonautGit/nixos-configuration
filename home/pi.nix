@@ -101,6 +101,19 @@ in
     model = "gpt-6-astra";
   };
 
+  # Fast mode: @pi-plugins/fast-mode sets service_tier = "priority" on the
+  # requests for the models listed here. Scoped to Codex Astra only; it uses
+  # the openai-codex subscription (not an OpenAI API key). Priority inference
+  # burns Codex subscription allowance faster and costs more. Toggle per
+  # session with `/fast on` / `/fast off`, or set enabled = false to default off.
+  home.file.".pi/agent/extensions/fast-mode.json".text = builtins.toJSON {
+    enabled = true;
+    showStatus = true;
+    models = [
+      "openai-codex/gpt-6-astra"
+    ];
+  };
+
   # Scoped models: declaratively pin the set of models usable for
   # Ctrl+P cycling and the /scoped-models picker (pi's `enabledModels`
   # setting, matched as `provider/modelId` globs against the model
@@ -121,6 +134,9 @@ in
       # Unlike web-search, this is not an offline/Nix-built dependency closure.
       # FreeCAD's local connection is configured by modules/freecad/default.nix.
       "npm:pi-mcp-adapter@2.32.1"
+      # Fast mode: injects service_tier = "priority" into matching requests.
+      # Configured below in ~/.pi/agent/extensions/fast-mode.json.
+      "npm:@pi-plugins/fast-mode@0.1.12"
     ];
     enabledModels = [
       # latest deepseek flash (v4.1 at time of writing)
