@@ -28,7 +28,6 @@
     ./modules/moonlight-mic/moonlight-mic.nix
     ./modules/docker/docker.nix
     ./modules/yazi/yazi.nix
-    ./modules/rebuild/rebuild.nix
     ./modules/tailscale/tailscale.nix
     ./modules/chatgpt-desktop/chatgpt-desktop.nix
   ];
@@ -45,11 +44,6 @@
       "--commit-lock-file"
     ];
   };
-
-  # Git-snapshotting nixos-rebuild wrapper (see modules/rebuild/rebuild.nix).
-  # flakeName defaults to networking.hostName ("nixos"), which matches
-  # nixosConfigurations.nixos in flake.nix.
-  programs.rebuild.enable = true;
 
   home-manager.backupFileExtension = "bak";
   home-manager.overwriteBackup = true;
