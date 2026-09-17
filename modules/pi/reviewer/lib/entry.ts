@@ -1,4 +1,4 @@
-import { Box, Text } from "@earendil-works/pi-tui";
+import { Box, Text, TruncatedText } from "@earendil-works/pi-tui";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { ReviewerState } from "./state.ts";
 
@@ -82,13 +82,19 @@ export function registerRenderer(pi: ExtensionAPI): void {
 					? "fail-closed"
 					: d.source;
 		const head = mark + " reviewer " + d.decision.toUpperCase() + " [" + d.confidence + "] " + d.toolName + " (" + who + ", mode: " + d.mode + ")";
-		const box = new Box(1, 1, (text: string) => theme.bg("customMessageBg", text));
-		box.addChild(new Text(theme.fg(color as never, head)));
-		box.addChild(new Text(theme.fg("dim", d.reason)));
+		// Compact by default: no vertical padding on the box or its children
+		// (Text defaults to paddingY=1, which is what made every verdict tall),
+		// and the reason clamped to a single line. Expanding the entry (ctrl+o)
+		// reveals the full wrapped reason plus model/input/raw diagnostics.
+		const box = new Box(1, 0, (text: string) => theme.bg("customMessageBg", text));
+		box.addChild(new Text(theme.fg(color as never, head), 0, 0));
 		if (expanded) {
-			box.addChild(new Text(theme.fg("dim", `entry: ${entry.id} · model: ${d.reviewerModel ?? "none"}`)));
-			box.addChild(new Text(theme.fg("dim", "input: " + d.inputSummary)));
-			if (d.raw) box.addChild(new Text(theme.fg("dim", "raw: " + d.raw)));
+			box.addChild(new Text(theme.fg("dim", d.reason), 0, 0));
+			box.addChild(new Text(theme.fg("dim", `entry: ${entry.id} · model: ${d.reviewerModel ?? "none"}`), 0, 0));
+			box.addChild(new Text(theme.fg("dim", "input: " + d.inputSummary), 0, 0));
+			if (d.raw) box.addChild(new Text(theme.fg("dim", "raw: " + d.raw), 0, 0));
+		} else {
+			box.addChild(new TruncatedText(theme.fg("dim", d.reason), 0, 0));
 		}
 		return box;
 	});
