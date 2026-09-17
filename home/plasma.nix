@@ -55,6 +55,17 @@
       # wallpaper = ./wallpapers/foo.jpg;
     };
 
+    # -- Global shortcuts (kglobalshortcutsrc) ------------------------------
+    # Meta+Tab should behave like Windows' Task View: KWin's Overview effect
+    # shows all windows plus the virtual-desktop strip. By default Meta+Tab is
+    # bound to the same switcher as Alt+Tab, so free it there (Alt+Tab keeps
+    # cycling windows). Meta+W stays the stock Overview shortcut; drop
+    # "Meta+W" from the list to make Meta+Tab the only trigger.
+    shortcuts.kwin = {
+      "Overview" = [ "Meta+Tab" ];
+      "Walk Through Windows" = "Alt+Tab";
+    };
+
     # -- Low-level: set individual keys in any KDE rc file (~/.config/...) --
     # configFile."kdeglobals"."KDE"."SingleClick" = true;
 
