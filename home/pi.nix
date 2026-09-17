@@ -68,8 +68,12 @@ in
       compat = {
         thinkingFormat = "chat-template";
         chatTemplateKwargs = {
-          "enable_thinking" = { "$var" = "thinking.enabled"; };
-          "reasoning_effort" = { "$var" = "thinking.effort"; };
+          "enable_thinking" = {
+            "$var" = "thinking.enabled";
+          };
+          "reasoning_effort" = {
+            "$var" = "thinking.effort";
+          };
           "preserve_thinking" = true;
         };
       };
@@ -107,7 +111,7 @@ in
   home.file.".pi/agent/settings.json".text = builtins.toJSON {
     lastChangelogVersion = "0.85.1";
     defaultProvider = "openrouter";
-    defaultModel = "~deepseek/deepseek-v4-flash-latest";
+    defaultModel = "~deepseek/deepseek-flash-latest";
     defaultThinkingLevel = "xhigh";
     theme = "dark";
     packages = [
@@ -119,8 +123,8 @@ in
       "npm:pi-mcp-adapter@2.32.1"
     ];
     enabledModels = [
-      # deepseek flash latest
-      "openrouter/~deepseek/deepseek-v4-flash-latest"
+      # latest deepseek flash (v4.1 at time of writing)
+      "~deepseek/deepseek-flash-latest"
       # fable 5.1
       "openrouter/anthropic/claude-fable-5.1"
       # codex / gpt-6-astra
