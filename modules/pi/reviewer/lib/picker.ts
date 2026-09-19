@@ -1,15 +1,15 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Api, Model } from "@earendil-works/pi-ai";
+import { JEV_MODELS, findReviewerModel, hasReviewerAuth, type ReviewerModel } from "./models.ts";
 
 /**
  * Pick the reviewer model, mirroring the /model picker:
  * scoped models first (same set the built-in model picker offers),
  * otherwise the full available catalogue.
  */
-export async function pickReviewerModel(ctx: ExtensionContext, firstEnable: boolean): Promise<Model<Api> | undefined> {
+export async function pickReviewerModel(ctx: ExtensionContext, firstEnable: boolean): Promise<ReviewerModel | undefined> {
 	if (!ctx.hasUI) return undefined;
 
-	let models: Model<Api>[] = [];
+	let models: ReviewerModel[] = [];
 	if (ctx.scopedModels && ctx.scopedModels.length > 0) {
 		models = ctx.scopedModels.map((s) => s.model);
 	} else {
@@ -19,6 +19,8 @@ export async function pickReviewerModel(ctx: ExtensionContext, firstEnable: bool
 			models = [];
 		}
 	}
+	// Jev isn't in pi's chat catalogue; expose it only in this reviewer picker.
+	models = [...JEV_MODELS.filter(m => hasReviewerAuth(ctx, m)), ...models];
 	if (models.length === 0) {
 		ctx.ui.notify("No models available for the reviewer", "error");
 		return undefined;
@@ -31,13 +33,12 @@ export async function pickReviewerModel(ctx: ExtensionContext, firstEnable: bool
 	const choice = await ctx.ui.select(title, options);
 	if (choice === undefined) return undefined;
 
-	const slash = choice.indexOf("/");
-	const model = ctx.modelRegistry.find(choice.slice(0, slash), choice.slice(slash + 1));
+	const model = findReviewerModel(ctx, choice);
 	if (!model) {
 		ctx.ui.notify(`Model ${choice} not found`, "error");
 		return undefined;
 	}
-	if (!ctx.modelRegistry.hasConfiguredAuth(model)) {
+	if (!hasReviewerAuth(ctx, model)) {
 		ctx.ui.notify(`No authentication configured for ${choice} — pick another`, "warning");
 		return undefined;
 	}
@@ -55,12 +56,10 @@ export async function pickReviewerModel(ctx: ExtensionContext, firstEnable: bool
  * No keyword fallback: incidental prose containing "allow" is not permission.
  */
 export function parseVerdict(text: string): { decision: "allow" | "deny"; confidence: "high" | "medium" | "low"; reason: string } | undefined {
-	const decisions = new Set(["allow", "deny"]);
-
 	function fromObject(obj: Record<string, unknown>): ReturnType<typeof parseVerdict> {
 		const decision = typeof obj.decision === "string" ? obj.decision.toLowerCase() : undefined;
 		const reason = typeof obj.reason === "string" ? obj.reason.trim() : "";
-		if (!decision || !decisions.has(decision) || !reason) return undefined;
+		if ((decision !== "allow" && decision !== "deny") || !reason) return undefined;
 		const confidence =
 			typeof obj.confidence === "string" && ["high", "medium", "low"].includes(obj.confidence.toLowerCase())
 				? (obj.confidence.toLowerCase() as "high" | "medium" | "low")

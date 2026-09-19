@@ -15,6 +15,8 @@ export interface ReviewerConfig {
 	/** "provider/id" or "" → must be selected interactively on first enable */
 	reviewerModel: string;
 	reviewerThinking: ModelThinkingLevel;
+	/** Minimum native Jev confidence for an allow classification (0..1). */
+	jevMinConfidence: number;
 	reviewTimeoutMs: number;
 	/** tools to review; empty list = review everything */
 	reviewedTools: string[];
@@ -31,6 +33,7 @@ export const DEFAULT_CONFIG: ReviewerConfig = {
 	defaultMode: "deny",
 	reviewerModel: "",
 	reviewerThinking: "off",
+	jevMinConfidence: 0.9,
 	reviewTimeoutMs: 30_000,
 	reviewedTools: [],
 	sessionPersistence: false,

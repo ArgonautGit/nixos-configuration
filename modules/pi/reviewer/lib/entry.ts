@@ -33,7 +33,9 @@ export function registerExplanationCommand(pi: ExtensionAPI, state: ReviewerStat
 				return;
 			}
 			const selector = selectors[0] ?? "last";
-			const entries = ctx.sessionManager.getBranch().filter(e => e.type === "custom" && e.customType === "reviewer-decision");
+			const entries = ctx.sessionManager.getBranch()
+				.filter(e => e.type === "custom")
+				.filter(e => e.customType === "reviewer-decision");
 			const entry = entries.reverse().find(e => {
 				const d = e.data as DecisionData;
 				return selector === "last" || (selector === "deny" ? d.decision === "deny" : e.id === selector);

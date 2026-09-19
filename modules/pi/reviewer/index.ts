@@ -20,6 +20,7 @@ import { createState, MODE_LABELS, type Mode, type ReviewerState, type Verdict }
 import { loadConfig, loadRules, type ReviewerConfig } from "./lib/config.ts";
 import { matchesRule, renderInput } from "./lib/context.ts";
 import { pickReviewerModel } from "./lib/picker.ts";
+import { findReviewerModel, hasReviewerAuth } from "./lib/models.ts";
 import { runReviewer, SCHEMA_MARKER } from "./lib/reviewer.ts";
 import { registerRenderer, registerExplanationCommand, type DecisionData } from "./lib/entry.ts";
 
@@ -121,9 +122,8 @@ export default function (pi: ExtensionAPI) {
 					if (e?.type === "custom" && e.customType === "reviewer-state" && e.data) {
 						if (e.data.mode && ["deny", "ask", "allow"].includes(e.data.mode)) state.mode = e.data.mode;
 						if (e.data.model) {
-							const slash = e.data.model.indexOf("/");
-							const m = ctx.modelRegistry.find(e.data.model.slice(0, slash), e.data.model.slice(slash + 1));
-							if (m && ctx.modelRegistry.hasConfiguredAuth(m)) {
+							const m = findReviewerModel(ctx, e.data.model);
+							if (m && hasReviewerAuth(ctx, m)) {
 								state.reviewerModel = m;
 								state.modelSelectedThisSession = false;
 							}
@@ -138,9 +138,8 @@ export default function (pi: ExtensionAPI) {
 
 		// Pre-configured reviewer model from config.json skips interactive selection
 		if (!state.reviewerModel && config.reviewerModel) {
-			const slash = config.reviewerModel.indexOf("/");
-			const m = ctx.modelRegistry.find(config.reviewerModel.slice(0, slash), config.reviewerModel.slice(slash + 1));
-			if (m && ctx.modelRegistry.hasConfiguredAuth(m)) {
+			const m = findReviewerModel(ctx, config.reviewerModel);
+			if (m && hasReviewerAuth(ctx, m)) {
 				state.reviewerModel = m;
 			} else {
 				ctx.ui.notify(

@@ -11,9 +11,10 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 const root = process.env.PI_PACKAGE_DIR;
 assert.ok(root, 'Set PI_PACKAGE_DIR to pi\'s package root');
 const requirePi = createRequire(join(root, 'package.json'));
+const tuiUrl = pathToFileURL(requirePi.resolve('@earendil-works/pi-tui')).href;
 registerHooks({ resolve(specifier, context, nextResolve) {
   if (specifier === '@earendil-works/pi-tui') {
-    return nextResolve(pathToFileURL(requirePi.resolve(specifier)).href, context);
+    return nextResolve(tuiUrl, context);
   }
   return nextResolve(specifier, context);
 } });
@@ -24,6 +25,8 @@ const { buildReviewerPrompt, runReviewer, SCHEMA_MARKER } = await import('../lib
 const { createState } = await import('../lib/state.ts');
 const { DEFAULT_CONFIG, configDirCandidates } = await import('../lib/config.ts');
 const { parseVerdict } = await import('../lib/picker.ts');
+const { JEV_MODELS, findReviewerModel } = await import('../lib/models.ts');
+const { buildJevRequest, parseJevVerdict, decisionsUrl, MAX_JEV_REQUEST_BYTES } = await import('../lib/jev.ts');
 const cases = JSON.parse(readFileSync(new URL('./behavior-cases.json', import.meta.url), 'utf8'));
 const temp = mkdtempSync(join(tmpdir(), 'pi-reviewer-tests-'));
 const oldConfigDir = process.env.PI_REVIEWER_CONFIG_DIR;
@@ -57,6 +60,9 @@ async function harness(options = {}) {
     modelRegistry: {
       find: (_provider, id) => id === 'other' ? otherModel : model,
       hasConfiguredAuth: () => true,
+      getProviderAuthStatus: () => ({ configured: options.authConfigured ?? true }),
+      getProviderAuth: options.getProviderAuth ?? (async () => ({ auth: { apiKey: 'FAKE_TEST_KEY' } })),
+      getProvider: () => ({ baseUrl: options.baseUrl ?? 'https://openrouter.ai/api/v1' }),
       complete: async (...args) => {
         calls.push(args);
         return options.complete ? options.complete(...args) : answer(calls.length === 1 ? 'deny' : 'allow');
@@ -283,8 +289,326 @@ test('config fallback resolves the extension root rather than lib/', () => {
   assert.ok(configDirCandidates().includes(fileURLToPath(new URL('../', import.meta.url)).replace(/\/$/, '')));
 });
 
+const jevConfig = { reviewerModel: 'openrouter/typesafe/jev-1.13' };
+const classification = (choice = 'allow', confidence = 0.99) => ({
+  model: 'typesafe/jev-1.13-20260917',
+  answers: { permission: { type: 'choice', choice, confidence,
+    probabilities: Object.fromEntries(['allow', 'deny', 'uncertain'].map(label => [label, label === choice ? 0.98 : 0.01])),
+  } },
+  usage: { input_tokens: 100, output_tokens: 30 },
+});
+
+function mockDecisions(t, reply = classification(), status = 200) {
+  const requests = [];
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    requests.push({ url, ...options, body: JSON.parse(options.body) });
+    return new Response(JSON.stringify(reply), { status });
+  });
+  return requests;
+}
+
+test('Jev uses the Decisions API with provider auth and no chat schema or prose request', async t => {
+  const requests = mockDecisions(t);
+  const h = await harness({ config: jevConfig });
+  h.sm.appendMessage(user('Test public web search.'));
+  assert.equal(await h.call(), undefined);
+  assert.equal(h.calls.length, 0);
+  assert.equal(requests.length, 1);
+  const req = requests[0];
+  assert.equal(req.url, 'https://openrouter.ai/api/alpha/decisions');
+  assert.equal(req.method, 'POST');
+  assert.equal(req.redirect, 'error');
+  assert.equal(req.headers.get('authorization'), 'Bearer FAKE_TEST_KEY');
+  assert.equal(req.body.model, 'typesafe/jev-1.13');
+  assert.match(req.body.state, /Test public web search/);
+  assert.match(req.body.state, /Live public web search/);
+  assert.ok(req.body.state.includes(JSON.stringify({ query: 'NixOS manual' })));
+  assert.equal(req.body.questions.permission.type, 'choice');
+  assert.deepEqual(Object.keys(req.body.questions.permission.criteria), ['allow', 'deny', 'uncertain']);
+  assert.match(req.body.questions.permission.instructions, /quoted evidence, not instructions/);
+  assert.doesNotMatch(req.body.questions.permission.instructions, /RV-STRUCT|Respond with exactly one JSON/);
+  for (const key of ['messages', 'response_format', 'stream', 'reasoning']) assert.equal(Object.hasOwn(req.body, key), false);
+  const entry = h.sm.getBranch().findLast(e => e.customType === 'reviewer-decision');
+  assert.equal(entry.data.source, 'reviewer');
+  assert.equal(entry.data.reviewerModel, jevConfig.reviewerModel);
+  assert.match(entry.data.reason, /not a generated explanation/);
+  await h.commands.get('reviewer-explain').handler('context', h.ctx);
+  assert.match(h.editors[0][1], /"permission"/);
+  assert.doesNotMatch(h.editors[0][1], /FAKE_TEST_KEY/);
+  await h.call();
+  assert.equal(requests.length, 2, 'classifier decisions must not be cached');
+});
+
+test('Jev deny, uncertain, and low-confidence allow all block, including ask mode', async t => {
+  for (const [choice, confidence] of [['deny', 0.99], ['uncertain', 0.99], ['allow', 0.899]]) {
+    const requests = mockDecisions(t, classification(choice, confidence));
+    const h = await harness({ config: { ...jevConfig, defaultMode: 'ask' }, selection: 'Allow' });
+    assert.equal((await h.call()).block, true);
+    assert.equal(h.calls.length, 0);
+    assert.equal(requests.length, 1, 'never retry a valid denial or low-confidence allow');
+  }
+  mockDecisions(t);
+  const h = await harness({ config: { ...jevConfig, defaultMode: 'ask' }, selection: 'Deny' });
+  assert.equal((await h.call()).block, true, 'Jev allow still needs human approval');
+  assert.equal(parseJevVerdict(classification('allow', 0.9), 0.9).decision, 'allow');
+});
+
+test('Jev rejects malformed, incomplete, contradictory, and chat-style replies', () => {
+  const bad = [null, [], {}, { error: 'oops', ...classification() }, answer('allow'),
+    { answers: { permission: { type: 'choice', choice: 'allow' } } },
+  ];
+  for (const patch of [
+    { type: 'noul' }, { choice: 'ALLOW' }, { choice: 'maybe' },
+    ...[undefined, null, '0.99', NaN, Infinity, -1, 1.01].map(confidence => ({ confidence })),
+    { probabilities: { allow: 0.98, deny: 0.01 } },
+    { probabilities: { allow: 0.01, deny: 0.98, uncertain: 0.01 } },
+    { probabilities: { allow: 1, deny: 1, uncertain: 1 } },
+    { probabilities: { allow: 1, deny: -1, uncertain: 1 } },
+    { probabilities: { allow: 0.98, deny: 0.01, uncertain: '0.01' } },
+  ]) {
+    const response = classification();
+    Object.assign(response.answers.permission, patch);
+    bad.push(response);
+  }
+  for (const response of bad) assert.equal(parseJevVerdict(response, 0.9), undefined);
+});
+
+test('Jev failures never retry through the chat reviewer', async t => {
+  for (const status of [400, 401, 402, 403, 404, 408, 429, 500, 502, 503, 504, 524, 529]) {
+    const requests = mockDecisions(t, { error: { message: 'SENSITIVE_PROVIDER_ECHO' } }, status);
+    const h = await harness({ config: jevConfig });
+    const result = await h.call();
+    assert.equal(result.block, true);
+    assert.match(result.reason, new RegExp(`HTTP ${status}`));
+    assert.doesNotMatch(result.reason, /SENSITIVE_PROVIDER_ECHO/);
+    const attempts = [400, 401, 402, 403, 404].includes(status) ? 1 : 3;
+    assert.equal(requests.length, attempts);
+    assert.match(result.reason, new RegExp(`after ${attempts} attempt`));
+    assert.equal(h.calls.length, 0);
+  }
+  for (const reply of [{}, answer('allow'), { ...classification(), error: { message: 'failure' } }]) {
+    const requests = mockDecisions(t, reply);
+    const h = await harness({ config: jevConfig });
+    assert.equal((await h.call()).block, true);
+    assert.equal(h.sm.getBranch().at(-1).data.source, 'fail-closed');
+    assert.equal(requests.length, 1, 'invalid verdicts do not trigger retries');
+  }
+  t.mock.method(globalThis, 'fetch', async () => { throw new Error('network unavailable'); });
+  const h = await harness({ config: jevConfig });
+  assert.equal((await h.call()).block, true);
+  assert.equal(h.calls.length, 0);
+});
+
+const networkError = code => new TypeError('fetch failed', {
+  cause: Object.assign(new Error('PRIVATE_SOCKET_DETAILS'), { code }),
+});
+
+test('Jev retries transient network and server errors with identical requests', async t => {
+  const requests = [];
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    requests.push({ url, body: options.body, signal: options.signal });
+    if (requests.length === 1) throw networkError('ECONNRESET');
+    if (requests.length === 2) return new Response('PRIVATE_ERROR_BODY', { status: 503 });
+    return new Response(JSON.stringify(classification()));
+  });
+  const h = await harness({ config: jevConfig });
+  assert.equal(await h.call(), undefined);
+  assert.equal(requests.length, 3);
+  assert.deepEqual(requests[1], requests[0]);
+  assert.deepEqual(requests[2], requests[0]);
+  assert.equal(h.calls.length, 0);
+});
+
+test('Jev retries interrupted response bodies but not malformed JSON', async t => {
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async () => {
+    calls++;
+    if (calls === 1) return { ok: true, json: async () => { throw networkError('UND_ERR_SOCKET'); } };
+    return new Response(JSON.stringify(classification()));
+  });
+  const h = await harness({ config: jevConfig });
+  assert.equal(await h.call(), undefined);
+  assert.equal(calls, 2);
+  calls = 0;
+  t.mock.method(globalThis, 'fetch', async () => { calls++; return new Response('PRIVATE_INVALID_JSON'); });
+  const invalid = await harness({ config: jevConfig });
+  const result = await invalid.call();
+  assert.equal(result.block, true);
+  assert.match(result.reason, /returned invalid JSON after 1 attempt/);
+  assert.doesNotMatch(result.reason, /PRIVATE_INVALID_JSON/);
+  assert.equal(calls, 1);
+});
+
+test('Jev reports safe nested connection error codes after bounded retries', async t => {
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async () => {
+    calls++;
+    throw new TypeError('fetch failed', { cause: new AggregateError([
+      Object.assign(new Error('PRIVATE_IPV6_ADDRESS'), { code: 'ENETUNREACH' }),
+      Object.assign(new Error('PRIVATE_IPV4_ADDRESS'), { code: 'ETIMEDOUT' }),
+    ], 'PRIVATE_PROXY_URL') });
+  });
+  const h = await harness({ config: jevConfig });
+  const result = await h.call();
+  assert.equal(result.block, true);
+  assert.match(result.reason, /ENETUNREACH, ETIMEDOUT.*after 3 attempts/);
+  assert.doesNotMatch(result.reason, /PRIVATE_|FAKE_TEST_KEY/);
+  assert.equal(calls, 3);
+  assert.equal(h.sm.getBranch().at(-1).data.source, 'fail-closed');
+});
+
+test('Jev does not retry certificate, permanent DNS, or unknown non-network errors', async t => {
+  for (const code of ['ERR_TLS_CERT_ALTNAME_INVALID', 'CERT_HAS_EXPIRED', 'ENOTFOUND']) {
+    let calls = 0;
+    t.mock.method(globalThis, 'fetch', async () => { calls++; throw networkError(code); });
+    const h = await harness({ config: jevConfig });
+    const result = await h.call();
+    assert.equal(result.block, true);
+    assert.match(result.reason, new RegExp(`${code}.*after 1 attempt`));
+    assert.doesNotMatch(result.reason, /PRIVATE_SOCKET_DETAILS/);
+    assert.equal(calls, 1);
+  }
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async () => { calls++; throw new Error('PRIVATE_UNKNOWN_ERROR'); });
+  const h = await harness({ config: jevConfig });
+  const result = await h.call();
+  assert.match(result.reason, /cause unavailable.*after 1 attempt/);
+  assert.doesNotMatch(result.reason, /PRIVATE_UNKNOWN_ERROR/);
+  assert.equal(calls, 1);
+});
+
+test('Jev retries a generic fetch failure when no underlying cause is available', async t => {
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async () => {
+    if (++calls === 1) throw new TypeError('fetch failed');
+    return new Response(JSON.stringify(classification('deny')));
+  });
+  const h = await harness({ config: jevConfig });
+  assert.equal((await h.call()).block, true);
+  assert.equal(h.sm.getBranch().at(-1).data.source, 'reviewer');
+  assert.equal(calls, 2, 'stop immediately once a real denial arrives');
+});
+
+test('Jev backs off after Retry-After and stops on deadline or caller cancellation', async t => {
+  for (const retryAfter of ['60', new Date(Date.now() + 60_000).toUTCString()]) {
+    let calls = 0;
+    t.mock.method(globalThis, 'fetch', async () => {
+      calls++;
+      return new Response('limited', { status: 429, headers: { 'retry-after': retryAfter } });
+    });
+    const h = await harness({ config: jevConfig });
+    assert.match((await h.call()).reason, /Retry-After exceeds 5s/);
+    assert.equal(calls, 1, 'do not retry earlier than a long server-requested delay');
+  }
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async () => {
+    calls++;
+    return new Response('limited', { status: 429, headers: { 'retry-after': '1' } });
+  });
+  // Longer than the default 250ms backoff, shorter than Retry-After: 1s.
+  const h = await harness({ config: { ...jevConfig, reviewTimeoutMs: 400 } });
+  assert.match((await h.call()).reason, /timed out/);
+  assert.equal(calls, 1);
+  calls = 0;
+  const controller = new AbortController();
+  t.mock.method(globalThis, 'fetch', async () => {
+    calls++;
+    setTimeout(() => controller.abort(), 10);
+    throw networkError('EAI_AGAIN');
+  });
+  const cancelled = await harness({ config: jevConfig });
+  cancelled.ctx.signal = controller.signal;
+  assert.match((await cancelled.call()).reason, /aborted/);
+  assert.equal(calls, 1, 'no request after cancellation during backoff');
+});
+
+test('Jev honors resolved provider headers and base URL without storing credentials', async t => {
+  const requests = mockDecisions(t);
+  const h = await harness({ config: jevConfig, getProviderAuth: async () => ({ auth: {
+    apiKey: 'FAKE_TEST_KEY', baseUrl: 'https://proxy.example/or/api/v1',
+    headers: { Authorization: 'Bearer FAKE_OVERRIDE', 'X-Test': 'custom', 'X-Remove': null },
+  } }) });
+  assert.equal(await h.call(), undefined);
+  assert.equal(requests[0].url, 'https://proxy.example/or/api/alpha/decisions');
+  assert.equal(requests[0].headers.get('authorization'), 'Bearer FAKE_OVERRIDE');
+  assert.equal(requests[0].headers.get('x-test'), 'custom');
+  assert.equal(requests[0].headers.has('x-remove'), false);
+  assert.doesNotMatch(JSON.stringify(h.sm.getBranch()), /FAKE_TEST_KEY|FAKE_OVERRIDE/);
+  const deleted = await harness({ config: jevConfig, getProviderAuth: async () => ({ auth: {
+    apiKey: 'FAKE_TEST_KEY', headers: { Authorization: null },
+  } }) });
+  assert.match((await deleted.call()).reason, /No OpenRouter authorization/);
+  assert.equal(requests.length, 1);
+});
+
+test('Jev rejects non-JSON responses and allow mode bypasses all review', async t => {
+  t.mock.method(globalThis, 'fetch', async () => new Response('not JSON'));
+  const h = await harness({ config: jevConfig });
+  assert.equal((await h.call()).block, true);
+  assert.equal(h.sm.getBranch().at(-1).data.source, 'fail-closed');
+  const requests = mockDecisions(t);
+  const bypass = await harness({ config: { ...jevConfig, defaultMode: 'allow' } });
+  assert.equal(await bypass.call(), undefined);
+  assert.equal(requests.length, 0);
+  assert.equal(bypass.calls.length, 0);
+});
+
+test('Jev context and invalid thresholds fail closed before sending a request', async t => {
+  const requests = mockDecisions(t);
+  for (const jevMinConfidence of [-0.1, 1.1, '0.9', null]) {
+    const h = await harness({ config: { ...jevConfig, jevMinConfidence } });
+    assert.match((await h.call()).reason, /jevMinConfidence/);
+  }
+  const h = await harness({ config: jevConfig });
+  assert.match((await h.call({ query: 'x'.repeat(MAX_JEV_REQUEST_BYTES) })).reason, /context budget/);
+  assert.equal(requests.length, 0);
+});
+
+test('Jev timeout covers auth, HTTP requests, and caller cancellation', async t => {
+  const noAuth = await harness({ config: { ...jevConfig, reviewTimeoutMs: 5 },
+    getProviderAuth: () => new Promise(() => {}),
+  });
+  assert.match((await noAuth.call()).reason, /timed out/);
+  t.mock.method(globalThis, 'fetch', async (_url, { signal }) => new Promise((_resolve, reject) => {
+    signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+  }));
+  const slow = await harness({ config: { ...jevConfig, reviewTimeoutMs: 5 } });
+  assert.match((await slow.call()).reason, /timed out/);
+  const requests = mockDecisions(t);
+  const cancelled = await harness({ config: jevConfig });
+  cancelled.ctx.signal = AbortSignal.abort();
+  assert.match((await cancelled.call()).reason, /aborted/);
+  assert.equal(requests.length, 0);
+});
+
+test('Jev model resolution, selection, persistence, and missing authentication', async t => {
+  const requests = mockDecisions(t);
+  const h = await harness({ config: jevConfig, selection: 'openrouter/~typesafe/jev-latest' });
+  assert.equal(findReviewerModel(h.ctx, jevConfig.reviewerModel), JEV_MODELS[0]);
+  await h.commands.get('reviewer-model').handler('', h.ctx);
+  await h.call();
+  assert.equal(requests[0].body.model, '~typesafe/jev-latest');
+  const resumed = await harness({ config: { ...jevConfig, sessionPersistence: true } });
+  resumed.sm.appendCustomEntry('reviewer-state', { mode: 'deny', model: 'openrouter/~typesafe/jev-latest' });
+  await resumed.handlers.get('session_start')({ reason: 'resume' }, resumed.ctx);
+  await resumed.call();
+  assert.equal(requests[1].body.model, '~typesafe/jev-latest');
+  const missing = await harness({ config: jevConfig, hasUI: false, authConfigured: false });
+  assert.equal((await missing.call()).block, true);
+  const unresolved = await harness({ config: jevConfig, getProviderAuth: async () => undefined });
+  assert.match((await unresolved.call()).reason, /No OpenRouter authentication/);
+  assert.equal(requests.length, 2);
+});
+
+test('Decisions URL preserves proxy prefixes and does not append to /v1', () => {
+  assert.equal(decisionsUrl(), 'https://openrouter.ai/api/alpha/decisions');
+  assert.equal(decisionsUrl('https://proxy.example/openrouter/api/v1/'), 'https://proxy.example/openrouter/api/alpha/decisions');
+  for (const base of ['https://proxy.example/v1', 'https://openrouter.ai/api/v1?key=secret']) {
+    assert.throws(() => decisionsUrl(base));
+  }
+});
+
 // These are prompt/pipeline checks, NOT assertions about a live model's judgment.
-// The separate opt-in /reviewer-eval command tests expected decisions against an LLM.
 for (const fixture of cases) {
   test(`behavior fixture reaches reviewer intact: ${fixture.name}`, () => {
     const entries = fixture.messages.map(([role, content]) => role === 'reviewerDecision'
@@ -297,5 +621,10 @@ for (const fixture of cases) {
     assert.match(prompt.system, /Latest explicit user clarifications supersede/);
     assert.match(prompt.system, /private-data disclosure/);
     assert.ok(['allow', 'deny'].includes(fixture.expected));
+    const classifierPrompt = buildReviewerPrompt(cfg, 'Deny private-data disclosure.', '/etc/nixos', transcript, fixture.tool, fixture.input, undefined, true);
+    const request = buildJevRequest(JEV_MODELS[0], classifierPrompt.system, classifierPrompt.user);
+    assert.ok(request.state.includes(JSON.stringify(fixture.input)));
+    assert.match(request.questions.permission.instructions, /Latest explicit user clarifications supersede/);
+    assert.doesNotMatch(request.questions.permission.instructions, /RV-STRUCT/);
   });
 }

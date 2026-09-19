@@ -1,5 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Api, Model } from "@earendil-works/pi-ai";
+import { isJevModel, type ReviewerModel } from "./models.ts";
+import { buildJevRequest, requestJev, parseJevVerdict, MAX_JEV_REQUEST_BYTES } from "./jev.ts";
 import { randomUUID } from "node:crypto";
 import type { ReviewerConfig } from "./config.ts";
 import type { ReviewerState, Verdict } from "./state.ts";
@@ -39,6 +40,7 @@ export function buildReviewerPrompt(
 	toolName: string,
 	input: Record<string, unknown>,
 	toolDescription = "(description unavailable)",
+	classifier = false,
 ): { system: string; user: string } {
 	const system = `You are a permission reviewer, NOT the coding agent and NOT a task planner.
 You do not execute tools or continue the conversation. Decide whether the single
@@ -71,9 +73,7 @@ a past decision, do not claim hidden memory or reasoning you were not given.
 ${rules}
 </rules>
 
-${OUTPUT_CONTRACT}
-
-${MARKER_NOTE}`;
+${classifier ? "Classify permission for the proposed call using the supplied choice criteria. Choose uncertain when a material permission question remains." : `${OUTPUT_CONTRACT}\n\n${MARKER_NOTE}`}`;
 
 	const user = `## Working directory
 ${cwd}
@@ -86,7 +86,7 @@ Tool: ${toolName}
 Description (quoted data): ${JSON.stringify(toolDescription)}
 Input (complete JSON): ${JSON.stringify(input)}
 
-Review this call against the rules and the user's intent. Reply with the JSON verdict only.`;
+${classifier ? "" : "Review this call against the rules and the user's intent. Reply with the JSON verdict only."}`;
 
 	return { system, user };
 }
@@ -103,13 +103,13 @@ function clipRaw(text: string): string {
 	return text.length <= RAW_CLIP ? text : text.slice(0, RAW_CLIP) + " …[truncated]";
 }
 
-/** One reviewer LLM round-trip. Never throws; fail-closed on any problem. */
+/** A fresh review with one shared deadline for transport retries; fail-closed on any problem. */
 export async function runReviewer(
 	ctx: ExtensionContext,
 	state: ReviewerState,
 	cfg: ReviewerConfig,
 	rules: string,
-	model: Model<Api>,
+	model: ReviewerModel,
 	toolName: string,
 	input: Record<string, unknown>,
 	toolDescription?: string,
@@ -119,9 +119,12 @@ export async function runReviewer(
 		return { decision: "deny", confidence: "high", source: "fail-closed", reviewerModel: modelLabel,
 			reason: `Tool input exceeds ${MAX_REVIEW_INPUT_CHARS} characters; split it into smaller calls so it can be reviewed completely.` };
 	}
-	const { system, user } = buildReviewerPrompt(cfg, rules, ctx.cwd, buildTranscript(ctx, cfg), toolName, input, toolDescription);
+	const { system, user } = buildReviewerPrompt(cfg, rules, ctx.cwd, buildTranscript(ctx, cfg), toolName, input, toolDescription, isJevModel(model));
+	const jevRequest = isJevModel(model) ? buildJevRequest(model, system, user) : undefined;
 	const reviewId = randomUUID();
-	state.reviewRequests.set(reviewId, { system, user });
+	state.reviewRequests.set(reviewId, jevRequest
+		? { system: JSON.stringify(jevRequest.questions, null, 2), user: JSON.stringify(jevRequest.state) }
+		: { system, user });
 	while (state.reviewRequests.size > 10) state.reviewRequests.delete(state.reviewRequests.keys().next().value!);
 	const systemPlain = system.replace(MARKER_NOTE + "\n\n", "").replace("\n\n" + MARKER_NOTE, "").replace(MARKER_NOTE, "");
 
@@ -133,32 +136,45 @@ export async function runReviewer(
 	const messages = [
 		{ role: "user" as const, content: [{ type: "text" as const, text: user }], timestamp: Date.now() },
 	];
-	const call = (sys: string) =>
-		ctx.modelRegistry.complete(
-			model,
-			{ systemPrompt: sys, messages },
-			{
+	try {
+		let text: string;
+		let parsed: ReturnType<typeof parseVerdict>;
+		if (isJevModel(model) && jevRequest) {
+			if (!Number.isFinite(cfg.jevMinConfidence) || cfg.jevMinConfidence < 0 || cfg.jevMinConfidence > 1) {
+				throw new Error("jevMinConfidence must be a number between 0 and 1");
+			}
+			if (Buffer.byteLength(JSON.stringify(jevRequest), "utf8") > MAX_JEV_REQUEST_BYTES) {
+				throw new Error(`Jev request exceeds the conservative ${MAX_JEV_REQUEST_BYTES}-byte context budget; split the tool input or reduce contextBudget (input is never truncated)`);
+			}
+			// Decisions has no chat/schema fallback. Failure must never grant permission.
+			const response = await requestJev(ctx, jevRequest, signal);
+			text = JSON.stringify(response);
+			parsed = parseJevVerdict(response, cfg.jevMinConfidence);
+		} else if (!isJevModel(model)) {
+			const call = (sys: string) => ctx.modelRegistry.complete(model, { systemPrompt: sys, messages }, {
 				thinkingLevel: cfg.reviewerThinking,
 				cacheRetention: "none",
 				sessionId: randomUUID(),
 				signal,
-			},
-		);
-
-	try {
-		let response;
-		try {
-			// With marker: index.ts may attach response_format (structured outputs)
-			response = await call(system);
-		} catch (first) {
-			if (signal.aborted) throw first;
-			// Provider may reject structured outputs — retry once without the marker.
-			state.reviewRequests.set(reviewId, { system: systemPlain, user });
-			response = await call(systemPlain);
+			});
+			let response;
+			try {
+				response = await call(system);
+			} catch (first) {
+				if (signal.aborted) throw first;
+				state.reviewRequests.set(reviewId, { system: systemPlain, user });
+				response = await call(systemPlain);
+			}
+			if (response.stopReason === "error" || response.stopReason === "aborted") {
+				throw new Error("Chat reviewer returned an error or aborted response");
+			}
+			text = responseText(response);
+			parsed = parseVerdict(text);
+		} else {
+			throw new Error("Missing Jev request");
 		}
+		signal.throwIfAborted();
 		clearTimeout(timer);
-		const text = responseText(response);
-		const parsed = parseVerdict(text);
 		if (!parsed) {
 			return {
 				decision: "deny",

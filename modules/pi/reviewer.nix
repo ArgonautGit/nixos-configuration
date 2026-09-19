@@ -19,8 +19,11 @@ let
 
     # Reviewer model as "provider/id". Leave "" to force interactive selection
     # (the /model-style picker) on first guarded tool call each session.
-    reviewerModel = "openrouter/~deepseek/deepseek-flash-latest";
-    reviewerThinking = "off";
+    # Jev uses OpenRouter's Decisions API, not chat completions. Pin the
+    # classifier version so future model changes require an explicit update.
+    reviewerModel = "openrouter/typesafe/jev-1.13";
+    reviewerThinking = "off"; # only used when selecting a chat reviewer
+    jevMinConfidence = 0.9;
     reviewTimeoutMs = 30000;
 
     # Session start mode: "deny" (default, fail-closed), "ask", "allow".
@@ -44,7 +47,8 @@ let
 
     contextBudget = {
       maxMessages = 40;
-      maxChars = 60000;
+      # Leave room for rules + complete tool input in Jev's 32K context.
+      maxChars = 16000;
     };
 
     # Reviewer rules: verbatim text injected into the reviewer's system prompt.
@@ -112,6 +116,7 @@ let
         defaultMode
         reviewerModel
         reviewerThinking
+        jevMinConfidence
         reviewTimeoutMs
         reviewedTools
         sessionPersistence
@@ -135,6 +140,14 @@ let
     mkdir -p $out/lib
     cp ${./reviewer}/index.ts $out/index.ts
     cp ${./reviewer}/lib/*.ts $out/lib/
+    # Git-backed flakes omit untracked files. A wildcard alone can silently
+    # package a broken extension when an existing module imports a new file.
+    for module in config context entry jev models picker reviewer state; do
+      if ! test -f "$out/lib/$module.ts"; then
+        echo "Missing reviewer module: $module.ts. Git-add new files before rebuilding." >&2
+        exit 1
+      fi
+    done
     cp ${configJson} $out/config.json
     cp ${rulesMd} $out/rules.md
   '';

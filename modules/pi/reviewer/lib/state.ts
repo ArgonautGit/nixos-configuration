@@ -1,4 +1,4 @@
-import type { Api, Model } from "@earendil-works/pi-ai";
+import type { ReviewerModel } from "./models.ts";
 
 export type Mode = "deny" | "ask" | "allow";
 
@@ -17,11 +17,11 @@ export interface Verdict {
 
 export interface ReviewerState {
 	mode: Mode;
-	reviewerModel: Model<Api> | undefined;
+	reviewerModel: ReviewerModel | undefined;
 	/** true once the user picked a reviewer model interactively this session */
 	modelSelectedThisSession: boolean;
 	/** guard so parallel tool calls don't spawn multiple model pickers */
-	selectingModel: Promise<Model<Api> | undefined> | undefined;
+	selectingModel: Promise<ReviewerModel | undefined> | undefined;
 	/** Last ten request snapshots for local diagnosis, not persisted or reused. */
 	reviewRequests: Map<string, { system: string; user: string }>;
 }
