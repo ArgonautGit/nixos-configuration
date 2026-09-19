@@ -78,6 +78,21 @@
   # Enable networking
   networking.networkmanager.enable = true;
 
+  # Dual-homing fix (2026-09-19). With Ethernet and Wi-Fi both connected to the
+  # same LAN, Linux answers ARP for either IP from either card, so the router
+  # sometimes sends replies to the "wrong" NIC. The default strict reverse-path
+  # filter then silently drops those replies: outbound works, replies vanish,
+  # and everything times out for seconds to minutes until the router's ARP cache
+  # flips back. Symptoms: LAN gateway and Internet unreachable at the same
+  # instant while peer-to-peer LAN traffic (e.g. Moonlight) is unaffected.
+  #
+  # "loose" only requires the source to be reachable via *some* interface.
+  # Trade-off: slightly weaker anti-spoofing on a laptop behind NAT.
+  networking.firewall.checkReversePath = "loose";
+  # Only answer ARP on the NIC that actually owns the requested IP, which
+  # prevents the ARP flux at the source.
+  boot.kernel.sysctl."net.ipv4.conf.all.arp_ignore" = 1;
+
   # Set your time zone.
   time.timeZone = "America/New_York";
 
