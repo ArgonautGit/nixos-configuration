@@ -1,6 +1,6 @@
 import { Box, Text, TruncatedText } from "@earendil-works/pi-tui";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { ReviewerState } from "./state.ts";
+import type { ReviewerState, Verdict } from "./state.ts";
 
 export interface DecisionData {
 	toolName: string;
@@ -15,6 +15,11 @@ export interface DecisionData {
 	source: string;
 	mode: string;
 	userDecision?: "allow" | "deny";
+	stage?: "recommendation" | "final";
+	confirmation?: Verdict["confirmation"];
+	classifier?: Verdict["classifier"];
+	approvalFingerprint?: string;
+	instructionId?: string;
 	timestamp: number;
 }
 
@@ -51,6 +56,8 @@ export function registerExplanationCommand(pi: ExtensionAPI, state: ReviewerStat
 				`Model: ${d.reviewerModel ?? "none"} · time: ${new Date(d.timestamp).toISOString()}`,
 				`Input summary: ${d.inputSummary}`,
 				`Recorded reason: ${d.reason}`,
+				...(d.approvalFingerprint ? [`Exact-call approval fingerprint: ${d.approvalFingerprint}`] : []),
+				...(d.instructionId ? [`Deny-next instruction: ${d.instructionId}`] : []),
 				...(d.raw ? [`Raw reply (clipped): ${d.raw}`] : []),
 				"This is the recorded rationale, not a new review or access to hidden reasoning. No tool or model call was made. It may be mistaken; later clarification was not part of that decision.",
 			].join("\n\n");

@@ -1,10 +1,10 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isJevModel, type ReviewerModel } from "./models.ts";
-import { buildJevRequest, requestJev, parseJevVerdict, MAX_JEV_REQUEST_BYTES } from "./jev.ts";
+import { buildJevRequest, requestJev, parseJevVerdict, MAX_JEV_REQUEST_BYTES, SafeReviewerError } from "./jev.ts";
 import { randomUUID } from "node:crypto";
 import type { ReviewerConfig } from "./config.ts";
 import type { ReviewerState, Verdict } from "./state.ts";
-import { buildTranscript, MAX_REVIEW_INPUT_CHARS } from "./context.ts";
+import { buildReviewContext, MAX_REVIEW_INPUT_CHARS } from "./context.ts";
 import { parseVerdict } from "./picker.ts";
 
 /**
@@ -119,7 +119,12 @@ export async function runReviewer(
 		return { decision: "deny", confidence: "high", source: "fail-closed", reviewerModel: modelLabel,
 			reason: `Tool input exceeds ${MAX_REVIEW_INPUT_CHARS} characters; split it into smaller calls so it can be reviewed completely.` };
 	}
-	const { system, user } = buildReviewerPrompt(cfg, rules, ctx.cwd, buildTranscript(ctx, cfg), toolName, input, toolDescription, isJevModel(model));
+	const context = buildReviewContext(ctx, cfg);
+	if (!context.complete) {
+		return { decision: "deny", confidence: "high", source: "incomplete-context", reviewerModel: modelLabel,
+			reason: `Permission context incomplete: ${context.reason} No model request or automatic approval was made.` };
+	}
+	const { system, user } = buildReviewerPrompt(cfg, rules, ctx.cwd, context.transcript, toolName, input, toolDescription, isJevModel(model));
 	const jevRequest = isJevModel(model) ? buildJevRequest(model, system, user) : undefined;
 	const reviewId = randomUUID();
 	state.reviewRequests.set(reviewId, jevRequest
@@ -138,13 +143,13 @@ export async function runReviewer(
 	];
 	try {
 		let text: string;
-		let parsed: ReturnType<typeof parseVerdict>;
+		let parsed: Pick<Verdict, "decision" | "confidence" | "reason" | "confirmation" | "classifier"> | undefined;
 		if (isJevModel(model) && jevRequest) {
 			if (!Number.isFinite(cfg.jevMinConfidence) || cfg.jevMinConfidence < 0 || cfg.jevMinConfidence > 1) {
-				throw new Error("jevMinConfidence must be a number between 0 and 1");
+				throw new SafeReviewerError("jevMinConfidence must be a number between 0 and 1");
 			}
 			if (Buffer.byteLength(JSON.stringify(jevRequest), "utf8") > MAX_JEV_REQUEST_BYTES) {
-				throw new Error(`Jev request exceeds the conservative ${MAX_JEV_REQUEST_BYTES}-byte context budget; split the tool input or reduce contextBudget (input is never truncated)`);
+				throw new SafeReviewerError(`Jev request exceeds the conservative ${MAX_JEV_REQUEST_BYTES}-byte context budget; split the tool input or reduce contextBudget (input is never truncated)`);
 			}
 			// Decisions has no chat/schema fallback. Failure must never grant permission.
 			const response = await requestJev(ctx, jevRequest, signal);
@@ -166,12 +171,12 @@ export async function runReviewer(
 				response = await call(systemPlain);
 			}
 			if (response.stopReason === "error" || response.stopReason === "aborted") {
-				throw new Error("Chat reviewer returned an error or aborted response");
+				throw new SafeReviewerError("Chat reviewer returned an error or aborted response");
 			}
 			text = responseText(response);
 			parsed = parseVerdict(text);
 		} else {
-			throw new Error("Missing Jev request");
+			throw new SafeReviewerError("Missing Jev request");
 		}
 		signal.throwIfAborted();
 		clearTimeout(timer);
@@ -190,7 +195,10 @@ export async function runReviewer(
 	} catch (e) {
 		clearTimeout(timer);
 		const aborted = signal.aborted;
-		const detail = aborted ? "aborted or timed out" : e instanceof Error ? e.message : String(e);
+		// Auth resolution and Headers/URL constructors can throw before fetch,
+		// sometimes including credential values. Only surface our safe messages.
+		const detail = aborted ? "aborted or timed out"
+			: e instanceof SafeReviewerError ? e.message : "request failed (private error details suppressed)";
 		return {
 			decision: "deny",
 			confidence: "high",

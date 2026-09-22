@@ -7,7 +7,7 @@
  *   allow — unconstrained; reviewer bypassed
  *
  * Commands:
- *   /perm [deny|ask|allow|status]
+ *   /perm [deny|ask|allow|status|deny-next]
  *   /reviewer-model
  *   /reviewer-explain [last|deny|entry-id] [context]
  *
@@ -15,10 +15,12 @@
  * PI_REVIEWER_CONFIG_DIR env var overrides for dev/testing).
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ToolCallEvent, ToolCallEventResult } from "@earendil-works/pi-coding-agent";
+import { randomUUID } from "node:crypto";
+import { bindCall, confirmExactCall, invalidateApprovals, pendingDenyNext } from "./lib/gate.ts";
 import { createState, MODE_LABELS, type Mode, type ReviewerState, type Verdict } from "./lib/state.ts";
 import { loadConfig, loadRules, type ReviewerConfig } from "./lib/config.ts";
-import { matchesRule, renderInput } from "./lib/context.ts";
+import { buildReviewContext, matchesRule, renderInput } from "./lib/context.ts";
 import { pickReviewerModel } from "./lib/picker.ts";
 import { findReviewerModel, hasReviewerAuth } from "./lib/models.ts";
 import { runReviewer, SCHEMA_MARKER } from "./lib/reviewer.ts";
@@ -75,6 +77,7 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function setMode(mode: Mode, ctx: import("@earendil-works/pi-coding-agent").ExtensionContext): void {
+		invalidateApprovals(state);
 		state.mode = mode;
 		ctx.ui.notify(`Reviewer mode set to: ${mode} — ${MODE_LABELS[mode]}`, "info");
 		updateWidget(ctx);
@@ -104,9 +107,12 @@ export default function (pi: ExtensionAPI) {
 		const r = loadRules(dir);
 		rules = r.rules;
 
+		invalidateApprovals(state);
+		state.controlFault = false;
 		state.mode = config.defaultMode;
 		state.reviewerModel = undefined;
 		state.modelSelectedThisSession = false;
+		state.selectingModel = undefined;
 		state.reviewRequests.clear();
 
 		// Optional session-persisted state (mode + model) on resume
@@ -153,14 +159,30 @@ export default function (pi: ExtensionAPI) {
 		updateWidget(ctx);
 	});
 
-	pi.on("tool_call", async (event, ctx) => {
-		if (state.mode === "allow") return undefined;
+	// Invalidate pending approvals even for queued user input not persisted yet.
+	pi.on("input", () => { invalidateApprovals(state); });
+	pi.on("session_before_switch", () => { invalidateApprovals(state); });
+	pi.on("session_before_fork", () => { invalidateApprovals(state); });
+	pi.on("session_before_tree", () => { invalidateApprovals(state); });
 
+	async function reviewToolCall(event: ToolCallEvent, ctx: ExtensionContext): Promise<ToolCallEventResult | undefined> {
 		const toolName = event.toolName;
 		const input = (event.input ?? {}) as Record<string, unknown>;
-		if (config.reviewedTools.length > 0 && !config.reviewedTools.includes(toolName)) return undefined;
 		const rendered = renderInput(input);
 		const serialized = JSON.stringify(input); // Static rules must also see the full input.
+		if (state.controlFault) return { block: true, reason: "Reviewer control persistence failed; reissue /perm deny-next after fixing session storage." };
+		const instructionId = pendingDenyNext(ctx);
+		if (instructionId) {
+			// Synchronous consumption BEFORE any await makes sibling preflights
+			// consume exactly one instruction, even with parallel callers.
+			pi.appendEntry("reviewer-control", { action: "consume-deny-next", instructionId, toolCallId: event.toolCallId });
+			logDecision(ctx, { toolName, toolCallId: event.toolCallId, inputSummary: rendered,
+				decision: "deny", confidence: "high", source: "user", mode: state.mode, userDecision: "deny", instructionId,
+				reason: "Blocked exactly one preflight by the user's /perm deny-next command." });
+			return { block: true, reason: "Blocked by /perm deny-next; that instruction has now been consumed." };
+		}
+		if (state.mode === "allow") return undefined;
+		if (config.reviewedTools.length > 0 && !config.reviewedTools.includes(toolName)) return undefined;
 
 		// Hard static deny — applies even in ask mode, no prompt, no reviewer
 		for (const rule of config.alwaysDeny) {
@@ -186,6 +208,15 @@ export default function (pi: ExtensionAPI) {
 			if (matchesRule(rule, toolName, serialized)) return undefined;
 		}
 
+		const permission = buildReviewContext(ctx, config);
+		if (!permission.complete) {
+			const reason = `Permission context incomplete: ${permission.reason}`;
+			logDecision(ctx, { toolName, toolCallId: event.toolCallId, inputSummary: rendered,
+				decision: "deny", confidence: "high", source: "incomplete-context", reason, mode: state.mode });
+			return { block: true, reason };
+		}
+		const binding = bindCall(ctx, state, config, event);
+
 		// Reviewer model must exist before any review can happen
 		if (!state.reviewerModel) {
 			if (!ctx.hasUI) {
@@ -194,15 +225,21 @@ export default function (pi: ExtensionAPI) {
 					reason: "Reviewer not enabled: no reviewer model is configured. The user must run /reviewer-model or set reviewerModel in config.json.",
 				};
 			}
-			state.selectingModel ??= pickReviewerModel(ctx, true).then((m) => {
-				if (m) {
-					state.reviewerModel = m;
-					state.modelSelectedThisSession = true;
-					updateWidget(ctx);
-				}
-				state.selectingModel = undefined;
-				return m;
-			});
+			if (!state.selectingModel) {
+				const generation = state.generation;
+				const selecting: NonNullable<ReviewerState["selectingModel"]> = pickReviewerModel(ctx, true).then((m) => {
+					if (state.generation !== generation) return undefined;
+					if (m) {
+						state.reviewerModel = m;
+						state.modelSelectedThisSession = true;
+						updateWidget(ctx);
+					}
+					return m;
+				}).finally(() => {
+					if (state.selectingModel === selecting) state.selectingModel = undefined;
+				});
+				state.selectingModel = selecting;
+			}
 			const picked = await state.selectingModel;
 			if (!picked) {
 				return {
@@ -215,7 +252,8 @@ export default function (pi: ExtensionAPI) {
 		// Never cache permission verdicts: even identical input can have different
 		// authorization or side effects after a user clarification or tool result.
 		const description = pi.getAllTools().find(tool => tool.name === toolName)?.description;
-		const verdict = await runReviewer(ctx, state, config, rules, state.reviewerModel!, toolName, input, description);
+		if (!binding.current()) return { block: true, reason: "Call aborted or tool/permission context changed before review; submit a fresh call." };
+		const verdict = await runReviewer({ ...ctx, signal: binding.signal }, state, config, rules, state.reviewerModel!, toolName, JSON.parse(serialized), description);
 
 		logDecision(ctx, {
 			toolName,
@@ -229,58 +267,60 @@ export default function (pi: ExtensionAPI) {
 			raw: verdict.raw,
 			source: verdict.source,
 			mode: state.mode,
+			confirmation: verdict.confirmation,
+			classifier: verdict.classifier,
+			stage: verdict.confirmation === "low-confidence-allow" || (state.mode === "ask" && verdict.decision === "allow")
+				? "recommendation" : "final",
 		});
 
-		if (verdict.decision === "deny") {
+		if (verdict.decision === "deny" && verdict.confirmation !== "low-confidence-allow") {
 			notifyVerdict(ctx, verdict, toolName);
-			return {
-				block: true,
-				reason: `REVIEWER DENIED this tool call: ${verdict.reason}`,
-				terminate:
-					verdict.source === "static-deny" &&
-					config.denyTerminate.some((r) => matchesRule(r, toolName, serialized)),
-			};
+			return { block: true, reason: `REVIEWER DENIED this tool call: ${verdict.reason}` };
 		}
 
-		// Reviewer allows. In ask mode the user still has the final say — wait for explicit allow.
-		if (state.mode === "ask") {
+		if (!binding.current()) {
+			const reason = "Tool call, session, or user instructions changed during review; approval discarded.";
+			logDecision(ctx, { toolName, toolCallId: event.toolCallId, inputSummary: rendered,
+				decision: "deny", confidence: "high", source: "fail-closed", reason, mode: state.mode });
+			return { block: true, reason };
+		}
+		// Low-confidence Jev ALLOW is not approval. It can only proceed with
+		// explicit human consent for this exact call. Deny/uncertain/errors above
+		// never reach the confirmation path, regardless of ask mode.
+		if (state.mode === "ask" || verdict.confirmation === "low-confidence-allow") {
 			if (!ctx.hasUI) {
-				return { block: true, reason: `ask mode without a UI — blocked (fail-closed). Reviewer said: ${verdict.reason}` };
+				const reason = `Human approval required without a UI — blocked (fail-closed). ${verdict.reason}`;
+				logDecision(ctx, { toolName, toolCallId: event.toolCallId, inputSummary: rendered, reviewId: verdict.reviewId,
+					decision: "deny", confidence: "high", source: "fail-closed", stage: "final", reason, mode: state.mode });
+				return { block: true, reason };
 			}
-			const choice = await ctx.ui.select(
-				`Reviewer recommends ALLOW (${verdict.confidence}): ${verdict.reason}\n\nAllow ${toolName}?`,
-				["Allow", "Deny"],
-			);
-			const userDecision = choice === "Allow" ? "allow" : "deny";
-			logDecision(ctx, {
-				toolName,
-				toolCallId: event.toolCallId,
-				reviewId: verdict.reviewId,
-				inputSummary: rendered,
-				decision: userDecision,
-				confidence: verdict.confidence,
-				reason: verdict.reason,
-				reviewerModel: verdict.reviewerModel,
-				raw: verdict.raw,
-				source: "user",
-				mode: state.mode,
-				userDecision,
-			});
-			if (userDecision === "deny") {
-				return {
-					block: true,
-					reason: `User denied this tool call. Reviewer had recommended allow: ${verdict.reason}`,
-				};
-			}
-			return undefined;
+			const approved = await confirmExactCall(ctx, state, binding, verdict.reason);
+			const userDecision = approved ? "allow" : "deny";
+			const reason = approved ? "User explicitly approved the inspected exact tool call."
+				: "User denied/cancelled, UI failed, or the call/context changed; no approval granted.";
+			logDecision(ctx, { toolName, toolCallId: event.toolCallId, reviewId: verdict.reviewId,
+				inputSummary: rendered, decision: userDecision, confidence: verdict.confidence,
+				reason, reviewerModel: verdict.reviewerModel, raw: verdict.raw, classifier: verdict.classifier,
+				source: "user", mode: state.mode, userDecision, approvalFingerprint: binding.fingerprint });
+			return approved ? undefined : { block: true, reason };
 		}
 
 		notifyVerdict(ctx, verdict, toolName);
 		return undefined;
+	}
+
+	pi.on("tool_call", async (event, ctx) => {
+		try {
+			return await reviewToolCall(event, ctx);
+		} catch {
+			// Never surface raw SDK/auth/session exceptions (possibly private).
+			return { block: true, reason: "Reviewer gate failed; call blocked (private error details suppressed)." };
+		}
 	});
 
 	// Persist mode+model choice for later restore (opt-in)
 	pi.on("session_shutdown", async (_event, ctx) => {
+		invalidateApprovals(state);
 		if (config?.sessionPersistence) {
 			try {
 				pi.appendEntry("reviewer-state", { mode: state.mode, model: reviewerModelLabel() });
@@ -291,11 +331,24 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("perm", {
-		description: "Reviewer permission mode: /perm [deny|ask|allow|status]",
+		description: "Reviewer permissions: /perm [deny|ask|allow|status|deny-next]",
 		handler: async (args, ctx) => {
 			const arg = (args ?? "").trim().toLowerCase();
+			if (arg === "deny-next") {
+				invalidateApprovals(state);
+				try {
+					const instructionId = randomUUID();
+					pi.appendEntry("reviewer-control", { action: "arm-deny-next", instructionId });
+					state.controlFault = false;
+					ctx.ui.notify(`Deny-next armed (${instructionId}): blocks one new tool preflight, even in allow mode or on an allowlist.`, "info");
+				} catch {
+					state.controlFault = true;
+					ctx.ui.notify("Could not persist deny-next; tool calls blocked until session storage is fixed and the command is reissued.", "error");
+				}
+				return;
+			}
 			if (arg === "status") {
-				ctx.ui.notify(`Reviewer mode: ${state.mode} — ${MODE_LABELS[state.mode]} · model: ${reviewerModelLabel()}`, "info");
+				ctx.ui.notify(`Reviewer mode: ${state.mode} — ${MODE_LABELS[state.mode]} · model: ${reviewerModelLabel()} · deny-next: ${pendingDenyNext(ctx) ?? "not armed"}`, "info");
 				return;
 			}
 			if (arg === "" && ctx.hasUI) {
@@ -307,15 +360,21 @@ export default function (pi: ExtensionAPI) {
 				setMode(arg as Mode, ctx);
 				return;
 			}
-			ctx.ui.notify("Usage: /perm [deny|ask|allow|status]", "warning");
+			ctx.ui.notify("Usage: /perm [deny|ask|allow|status|deny-next]", "warning");
 		},
 	});
 
 	pi.registerCommand("reviewer-model", {
 		description: "Select the model that reviews tool calls (like /model)",
 		handler: async (_args, ctx) => {
+			const generation = state.generation;
 			const m = await pickReviewerModel(ctx, !state.modelSelectedThisSession);
+			if (state.generation !== generation) {
+				ctx.ui.notify("Session or permission context changed; reviewer model selection discarded.", "warning");
+				return;
+			}
 			if (m) {
+				invalidateApprovals(state);
 				state.reviewerModel = m;
 				state.modelSelectedThisSession = true;
 				updateWidget(ctx);

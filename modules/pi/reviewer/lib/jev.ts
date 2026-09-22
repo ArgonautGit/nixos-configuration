@@ -7,6 +7,9 @@ import type { Verdict } from "./state.ts";
 // Includes questions and JSON framing, with room for provider-side overhead.
 export const MAX_JEV_REQUEST_BYTES = 28_000;
 
+/** Only use for messages we construct, never raw provider/SDK exception text. */
+export class SafeReviewerError extends Error {}
+
 export function buildJevRequest(model: JevModel, system: string, user: string) {
 	return {
 		model: model.id,
@@ -33,7 +36,7 @@ function probability(value: unknown): value is number {
 }
 
 /** No prose/keyword fallback for classifier replies. Missing scores fail closed. */
-export function parseJevVerdict(value: unknown, minConfidence: number): Pick<Verdict, "decision" | "confidence" | "reason"> | undefined {
+export function parseJevVerdict(value: unknown, minConfidence: number): Pick<Verdict, "decision" | "confidence" | "reason" | "confirmation" | "classifier"> | undefined {
 	if (!probability(minConfidence) || !record(value) || "error" in value || !record(value.answers)) return undefined;
 	const answer = value.answers.permission;
 	if (!record(answer) || answer.type !== "choice" || !probability(answer.confidence)) return undefined;
@@ -44,14 +47,20 @@ export function parseJevVerdict(value: unknown, minConfidence: number): Pick<Ver
 	const scores = labels.map(label => probabilities[label] as number);
 	// Permit rounding of the documented probability distribution, not arbitrary scores.
 	if (Math.abs(scores.reduce((a, b) => a + b, 0) - 1) > 0.02 || probabilities[choice] !== Math.max(...scores)) return undefined;
+	const classifier: NonNullable<Verdict["classifier"]> = {
+		choice: choice as "allow" | "deny" | "uncertain", confidence,
+		probabilities: { allow: scores[0], deny: scores[1], uncertain: scores[2] },
+	};
 	const detail = `Jev classification: ${choice}; confidence ${confidence.toFixed(3)}; P(allow) ${(probabilities.allow as number).toFixed(3)}. `;
 	if (choice === "uncertain" || (choice === "allow" && confidence < minConfidence)) {
-		return { decision: "deny", confidence: "low", reason: detail + (choice === "uncertain"
+		return { decision: "deny", confidence: "low", classifier,
+			...(choice === "allow" ? { confirmation: "low-confidence-allow" as const } : {}),
+			reason: detail + (choice === "uncertain"
 			? "Permission is unresolved; clarification is required."
-			: `Below the configured confidence threshold ${minConfidence}; blocked.`) };
+			: `Below the configured confidence threshold ${minConfidence}; automatic execution blocked. Exact-call human approval is required.`) };
 	}
 	return {
-		decision: choice as "allow" | "deny",
+		decision: choice as "allow" | "deny", classifier,
 		confidence: confidence >= 0.9 ? "high" : confidence >= 0.7 ? "medium" : "low",
 		reason: detail + "This is a classifier result, not a generated explanation.",
 	};
@@ -61,7 +70,7 @@ export function parseJevVerdict(value: unknown, minConfidence: number): Pick<Ver
 export function decisionsUrl(baseUrl = "https://openrouter.ai/api/v1"): string {
 	const url = new URL(baseUrl);
 	if (!/\/api\/v1\/?$/.test(url.pathname) || url.search || url.hash || url.username || url.password) {
-		throw new Error("Jev requires an OpenRouter base URL ending in /api/v1");
+		throw new SafeReviewerError("Jev requires an OpenRouter base URL ending in /api/v1");
 	}
 	url.pathname = url.pathname.replace(/\/api\/v1\/?$/, "/api/alpha/decisions");
 	return url.href;
@@ -93,7 +102,7 @@ const KNOWN_CODES = new Set([
 	"UNABLE_TO_VERIFY_LEAF_SIGNATURE", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
 ]);
 
-class RequestFailure extends Error {
+class RequestFailure extends SafeReviewerError {
 	readonly retryable: boolean;
 	readonly retryAfterMs?: number;
 	constructor(message: string, retryable: boolean, retryAfterMs?: number) {
@@ -153,14 +162,14 @@ export async function requestJev(ctx: ExtensionContext, body: ReturnType<typeof 
 	signal.throwIfAborted();
 	// Resolve via pi's normal provider auth. Never read auth.json or log headers.
 	const resolved = await abortable(ctx.modelRegistry.getProviderAuth("openrouter"), signal);
-	if (!resolved) throw new Error("No OpenRouter authentication configured");
+	if (!resolved) throw new SafeReviewerError("No OpenRouter authentication configured");
 	const headers = new Headers();
 	if (resolved.auth.apiKey) headers.set("Authorization", `Bearer ${resolved.auth.apiKey}`);
 	for (const [key, value] of Object.entries(resolved.auth.headers ?? {})) {
 		if (value === null) headers.delete(key);
 		else headers.set(key, value);
 	}
-	if (!headers.has("Authorization")) throw new Error("No OpenRouter authorization header configured");
+	if (!headers.has("Authorization")) throw new SafeReviewerError("No OpenRouter authorization header configured");
 	headers.set("Content-Type", "application/json");
 	const url = decisionsUrl(resolved.auth.baseUrl ?? ctx.modelRegistry.getProvider("openrouter")?.baseUrl);
 	const serialized = JSON.stringify(body);
@@ -176,10 +185,10 @@ export async function requestJev(ctx: ExtensionContext, body: ReturnType<typeof 
 			signal.throwIfAborted();
 			if (!(error instanceof RequestFailure)) throw error;
 			if (!error.retryable || attempt === MAX_ATTEMPTS) {
-				throw new Error(`${error.message} after ${attempt} attempt${attempt === 1 ? "" : "s"}`);
+				throw new SafeReviewerError(`${error.message} after ${attempt} attempt${attempt === 1 ? "" : "s"}`);
 			}
 			await delay(Math.max(250 * 2 ** (attempt - 1), error.retryAfterMs ?? 0), undefined, { signal });
 		}
 	}
-	throw new Error("OpenRouter Decisions exhausted request attempts");
+	throw new SafeReviewerError("OpenRouter Decisions exhausted request attempts");
 }

@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { behaviorCases as cases, fixtureEntries } from './fixtures.mjs';
 
 assert.equal(process.argv[2], '--live', 'Explicit --live required (uses OpenRouter credits)');
 const configDir = process.argv[3];
@@ -25,18 +26,15 @@ const config = { ...DEFAULT_CONFIG, ...JSON.parse(readFileSync(join(configDir, '
 const model = JEV_MODELS.find(m => `${m.provider}/${m.id}` === config.reviewerModel);
 assert.ok(model, 'The built configuration must select a supported Jev model');
 const rules = readFileSync(join(configDir, 'rules.md'), 'utf8');
-const cases = JSON.parse(readFileSync(new URL('./behavior-cases.json', import.meta.url), 'utf8'));
 let failures = 0;
 for (const fixture of cases) {
-  const entries = fixture.messages.map(([role, content]) => role === 'reviewerDecision'
-    ? { type: 'custom', customType: 'reviewer-decision', data: content }
-    : { type: 'message', message: { role, content } });
+  const entries = fixtureEntries(fixture);
   const ctx = { cwd: '/etc/nixos', modelRegistry,
-    sessionManager: { buildContextEntries: () => entries },
+    sessionManager: { getBranch: () => entries },
   };
   const start = Date.now();
   const verdict = await runReviewer(ctx, createState(), config, rules, model, fixture.tool, fixture.input);
-  const pass = verdict.source === 'reviewer' && verdict.decision === fixture.expected;
+  const pass = ['reviewer', 'incomplete-context'].includes(verdict.source) && verdict.decision === fixture.expected;
   if (!pass) failures++;
   console.log(`${pass ? 'PASS' : 'FAIL'} ${fixture.name}: ${verdict.decision} (expected ${fixture.expected}, ${Date.now() - start}ms) — ${verdict.reason}`);
   if (verdict.source === 'fail-closed') {

@@ -76,6 +76,10 @@ let
       ## Environment facts
       - The user runs NixOS. /nix/store is read-only; system configuration lives in
         /etc/nixos (flake-based).
+      - Pi sets PI_PROVIDER and PI_MODEL to the selected provider and model names.
+        These are session metadata, not authentication variables. Inspecting those
+        specific names is different from dumping the whole environment, which can
+        expose credentials. No blanket approval of printenv or shell commands.
       - `nixos-rebuild switch`, profile installs, or edits under /etc/nixos change the
         user's system — deny those unless the user explicitly requested them in this
         conversation.
@@ -95,8 +99,12 @@ let
       - You are the reviewer, not the agent. Your reason explains YOUR verdict;
         do not tell the agent to explain your reasoning on your behalf.
       - If a material permission or safety question remains unresolved, deny with
-        low confidence and state what clarification is missing. Ask mode still
-        blocks reviewer denials; it prompts the user only after reviewer approval.
+        low confidence and state what clarification is missing. Deny and uncertain
+        classifications always block. A valid low-confidence Jev allow can proceed
+        only after explicit human confirmation of the complete exact tool call.
+      - /perm deny-next is a deterministic one-preflight prohibition enforced by
+        code, not by interpreting prose. Earlier blocked calls do not consume a
+        newly issued prohibition.
     '';
   };
 
@@ -142,7 +150,7 @@ let
     cp ${./reviewer}/lib/*.ts $out/lib/
     # Git-backed flakes omit untracked files. A wildcard alone can silently
     # package a broken extension when an existing module imports a new file.
-    for module in config context entry jev models picker reviewer state; do
+    for module in config context entry gate jev models picker reviewer state; do
       if ! test -f "$out/lib/$module.ts"; then
         echo "Missing reviewer module: $module.ts. Git-add new files before rebuilding." >&2
         exit 1
