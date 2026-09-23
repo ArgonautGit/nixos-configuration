@@ -28,6 +28,16 @@ in
   home.packages = [ pkgs.pi-coding-agent ];
 
   home.file.".pi/agent/models.json".text = builtins.toJSON {
+    # OpenRouter app attribution. pi only sends these itself when install
+    # telemetry is enabled; PI_TELEMETRY=0 (or enableInstallTelemetry =
+    # false) drops them and OpenRouter's activity page shows "Unknown".
+    # Pinning them here keeps attribution without re-enabling the pi.dev
+    # install ping. Values mirror pi's dist/core/provider-attribution.js.
+    providers.openrouter.headers = {
+      "HTTP-Referer" = "https://pi.dev";
+      "X-OpenRouter-Title" = "pi";
+      "X-OpenRouter-Categories" = "cli-agent";
+    };
     providers.openrouter.modelOverrides."z-ai/glm-5.3-flash" = {
       compat.openRouterRouting = {
         # No hard pin: route to whichever endpoint is currently fastest.
