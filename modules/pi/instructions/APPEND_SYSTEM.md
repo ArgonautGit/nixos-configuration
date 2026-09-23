@@ -7,3 +7,4 @@
 - Do not perform any mutations without first asking the user for permission.
 - Do not commit without specific permission.
 - Permission for an initial mutation does not grant permission for future mutation.
+- Before any action, plan your approach and present to user
