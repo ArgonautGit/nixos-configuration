@@ -3,6 +3,7 @@
   imports = [
     ./pi.nix
     ./plasma.nix
+    ../modules/pi/instructions.nix
     ../modules/pi/reviewer.nix
     ../modules/freecad
   ];
