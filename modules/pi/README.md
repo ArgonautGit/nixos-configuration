@@ -42,6 +42,14 @@ Every decision is appended to the session as a `reviewer-decision` entry
 (rendered in the TUI, not sent to the LLM context) with a `source` field:
 `static-allow | static-deny | reviewer | user | fail-closed | incomplete-context`.
 
+In the TUI each call gets one compact line naming the call and its outcome, e.g.
+`✔ bash  rg -n foo …   Jev 0.99` or `✘ edit  README.md (2 edits)   blocked: Jev allow 0.79 < 0.90`.
+Consecutive decisions (parallel calls, or a recommendation followed by your
+decision) render as ONE entry; the latest entry per call wins, so a pending
+"awaiting your approval" line becomes "you approved"/"you denied". Ctrl+O expands
+the full reason, source, mode, model, entry ID, input summary and raw reply.
+Chat-reviewer denials also show their prose reason. Toasts appear only for blocks.
+
 ## Permission modes
 
 | mode  | behavior |
@@ -171,7 +179,7 @@ model context. **Required** (kept whole, in order, with original roles):
 
 Assistant thinking is excluded. Abandoned branches are excluded; summaries never
 replace user authority. Tool calls inside assistant turns are summarized as the
-tool name plus the first 200 characters of their input, with the omitted length.
+tool name plus the first 80 characters of their input, with the omitted length.
 Each call was reviewed separately with its complete input, and copying whole
 arguments (such as file writes) into every later review used to exhaust the
 budget permanently. The call under review is always sent complete.
@@ -209,15 +217,27 @@ allowlist `printenv`, whole-environment dumps, or any shell command.
 
 The automatic threshold remains 0.9; valid verdicts are never retried to obtain
 an allow. In deny mode a validated below-threshold Jev allow is blocked without a
-prompt (switch to `/perm ask` to approve such calls manually). In ask mode, the UI first opens a scrollable
-editor containing the complete tool name, call ID, working directory, and arguments.
-Editing the preview denies approval; it cannot modify the tool call. Submit the
-unchanged inspection to proceed, then select **Allow this call**;
-Esc or any other response denies. Approval applies only to that invocation, never
-to retries or sibling calls. Dialogs are serialized. Changes to arguments, user
-instructions, session/branch, permission mode, reviewer model, or cancellation
-invalidate pending approvals. The SDK editor has no abort-signal API: after a
-cancellation, it may still need to be closed, but it cannot grant approval.
+prompt (switch to `/perm ask` to approve such calls manually). In ask mode the TUI
+opens one scrollable approval view built from the bound call snapshot:
+
+- **edit**: per-edit diff (`-` old / `+` new, shared lines as context) with line
+  numbers from the current file, and warnings when oldText is missing or not unique.
+  Every character of oldText/newText is shown.
+- **write**: diff against the existing file (unchanged runs collapsed to
+  `… N unchanged lines …`), or the full content of a new file.
+- **bash**: the command with its timeout; other tools: pretty-printed JSON.
+- `r` toggles the exact raw JSON snapshot (cwd, tool, call ID, input). Control
+  characters in content are shown escaped (`\u001b`), never interpreted.
+- `a` allows once, but only after the end of the preview (either view) has been on
+  screen; `d` denies; Esc dismisses. The agent is told which (`deny`, `cancel`,
+  `changed`, `edited`, `error` outcomes each have a specific reason).
+
+Without the TUI (RPC), the fallback is the scrollable editor with the complete
+JSON snapshot (editing it refuses approval) followed by **Allow this call**.
+Approval applies only to that invocation, never to retries or sibling calls.
+Dialogs are serialized. Changes to arguments, user instructions, session/branch,
+permission mode, reviewer model, or cancellation invalidate pending approvals and
+close the dialog; they can never grant approval.
 
 Automatic allows also recheck their binding before this hook returns. This does
 not sandbox tools, prevent filesystem races, or constrain other trusted extensions

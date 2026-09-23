@@ -136,7 +136,7 @@ export function registerSafetyTests({ harness, mockDecisions, classification, je
     const context = buildReviewContext(h.ctx, config);
     assert.equal(context.complete, true);
     assert.match(context.transcript, /I will write the file\./);
-    assert.match(context.transcript, /proposes tool: write; input summarized, first 200 of \d+ chars: \{\\"path\\":\\"notes\.md\\"/);
+    assert.match(context.transcript, /proposes tool: write; input summarized, first 80 of \d+ chars: \{\\"path\\":\\"notes\.md\\"/);
     assert.doesNotMatch(context.transcript, /WRITE_TAIL/);
   });
 

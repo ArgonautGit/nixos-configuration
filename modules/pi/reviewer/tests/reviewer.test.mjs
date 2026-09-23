@@ -8,7 +8,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { behaviorCases as cases, fixtureEntries } from './fixtures.mjs';
-import { registerSafetyTests } from './safety.mjs';
 
 const root = process.env.PI_PACKAGE_DIR;
 assert.ok(root, 'Set PI_PACKAGE_DIR to pi\'s package root');
@@ -20,7 +19,10 @@ registerHooks({ resolve(specifier, context, nextResolve) {
   }
   return nextResolve(specifier, context);
 } });
+// Load modules that import pi-tui only after the resolver hook is registered.
 const { default: reviewerExtension } = await import('../index.ts');
+const { registerSafetyTests } = await import('./safety.mjs');
+const { registerDisplayTests } = await import('./display.mjs');
 const { SessionManager } = await import(pathToFileURL(join(root, 'dist/core/session-manager.js')).href);
 const { buildTranscript, buildReviewContext, renderInput, MAX_REVIEW_INPUT_CHARS } = await import('../lib/context.ts');
 const { buildReviewerPrompt, runReviewer, SCHEMA_MARKER } = await import('../lib/reviewer.ts');
@@ -747,3 +749,4 @@ for (const fixture of cases) {
 }
 
 registerSafetyTests({ harness, mockDecisions, classification, jevConfig, user, assistant, answer });
+registerDisplayTests({ harness, mockDecisions, classification, jevConfig, user });

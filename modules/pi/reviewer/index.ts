@@ -19,7 +19,8 @@
 
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent, ToolCallEventResult } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "node:crypto";
-import { bindCall, confirmExactCall, invalidateApprovals, pendingDenyNext } from "./lib/gate.ts";
+import { APPROVAL_REASONS, bindCall, confirmExactCall, invalidateApprovals, pendingDenyNext } from "./lib/gate.ts";
+import { callTarget } from "./lib/preview.ts";
 import { createState, MODE_LABELS, type Mode, type ReviewerState, type Verdict } from "./lib/state.ts";
 import { loadConfig, loadRules, type ReviewerConfig } from "./lib/config.ts";
 import { buildReviewContext, matchesRule, renderInput, RESTATE_ENTRY } from "./lib/context.ts";
@@ -96,10 +97,10 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
+	/** Toasts only for blocks; allows are already shown as a transcript line. */
 	function notifyVerdict(ctx: import("@earendil-works/pi-coding-agent").ExtensionContext, verdict: Verdict, toolName: string): void {
-		const mark = verdict.decision === "allow" ? "✔" : "✘";
-		const level = verdict.decision === "allow" ? "info" : "warning";
-		ctx.ui.notify(`${mark} reviewer ${verdict.decision.toUpperCase()} (${verdict.confidence}) on ${toolName}: ${verdict.reason}`, level);
+		if (verdict.decision === "allow") return;
+		ctx.ui.notify(`✘ reviewer blocked ${toolName}: ${verdict.reason}`, "warning");
 	}
 
 	pi.on("session_start", async (event, ctx) => {
@@ -171,6 +172,7 @@ export default function (pi: ExtensionAPI) {
 		const toolName = event.toolName;
 		const input = (event.input ?? {}) as Record<string, unknown>;
 		const rendered = renderInput(input);
+		const target = callTarget(toolName, input); // display only
 		const serialized = JSON.stringify(input); // Static rules must also see the full input.
 		if (state.controlFault) return { block: true, reason: "Reviewer control persistence failed; reissue /perm deny-next after fixing session storage." };
 		const instructionId = pendingDenyNext(ctx);
@@ -178,7 +180,7 @@ export default function (pi: ExtensionAPI) {
 			// Synchronous consumption BEFORE any await makes sibling preflights
 			// consume exactly one instruction, even with parallel callers.
 			pi.appendEntry("reviewer-control", { action: "consume-deny-next", instructionId, toolCallId: event.toolCallId });
-			logDecision(ctx, { toolName, toolCallId: event.toolCallId, inputSummary: rendered,
+			logDecision(ctx, { toolName, toolCallId: event.toolCallId, inputSummary: rendered, target,
 				decision: "deny", confidence: "high", source: "user", mode: state.mode, userDecision: "deny", instructionId,
 				reason: "Blocked exactly one preflight by the user's /perm deny-next command." });
 			return { block: true, reason: "Blocked by /perm deny-next; that instruction has now been consumed." };
@@ -193,7 +195,7 @@ export default function (pi: ExtensionAPI) {
 				logDecision(ctx, {
 					toolName,
 					toolCallId: event.toolCallId,
-					inputSummary: rendered,
+					inputSummary: rendered, target,
 					decision: "deny",
 					confidence: "high",
 					reason: `Blocked by static alwaysDeny rule (tool: ${rule.tool}${rule.pattern ? `, pattern: ${rule.pattern}` : ""})`,
@@ -213,7 +215,7 @@ export default function (pi: ExtensionAPI) {
 		const permission = buildReviewContext(ctx, config);
 		if (!permission.complete) {
 			const reason = `Permission context incomplete: ${permission.reason}`;
-			logDecision(ctx, { toolName, toolCallId: event.toolCallId, inputSummary: rendered,
+			logDecision(ctx, { toolName, toolCallId: event.toolCallId, inputSummary: rendered, target,
 				decision: "deny", confidence: "high", source: "incomplete-context", reason, mode: state.mode });
 			return { block: true, reason };
 		}
@@ -265,7 +267,7 @@ export default function (pi: ExtensionAPI) {
 			toolName,
 			toolCallId: event.toolCallId,
 			reviewId: verdict.reviewId,
-			inputSummary: rendered,
+			inputSummary: rendered, target,
 			decision: verdict.decision,
 			confidence: verdict.confidence,
 			reason: verdict.reason,
@@ -275,6 +277,7 @@ export default function (pi: ExtensionAPI) {
 			mode: state.mode,
 			confirmation: verdict.confirmation,
 			classifier: verdict.classifier,
+			...(verdict.confirmation ? { threshold: config.jevMinConfidence } : {}),
 			stage: askUser ? "recommendation" : "final",
 		});
 
@@ -288,7 +291,7 @@ export default function (pi: ExtensionAPI) {
 
 		if (!binding.current()) {
 			const reason = "Tool call, session, or user instructions changed during review; approval discarded.";
-			logDecision(ctx, { toolName, toolCallId: event.toolCallId, inputSummary: rendered,
+			logDecision(ctx, { toolName, toolCallId: event.toolCallId, inputSummary: rendered, target,
 				decision: "deny", confidence: "high", source: "fail-closed", reason, mode: state.mode });
 			return { block: true, reason };
 		}
@@ -298,18 +301,19 @@ export default function (pi: ExtensionAPI) {
 		if (askUser) {
 			if (!ctx.hasUI) {
 				const reason = `Human approval required without a UI — blocked (fail-closed). ${verdict.reason}`;
-				logDecision(ctx, { toolName, toolCallId: event.toolCallId, inputSummary: rendered, reviewId: verdict.reviewId,
+				logDecision(ctx, { toolName, toolCallId: event.toolCallId, inputSummary: rendered, target, reviewId: verdict.reviewId,
 					decision: "deny", confidence: "high", source: "fail-closed", stage: "final", reason, mode: state.mode });
 				return { block: true, reason };
 			}
-			const approved = await confirmExactCall(ctx, state, binding, verdict.reason);
+			const outcome = await confirmExactCall(ctx, state, binding, verdict.reason);
+			const approved = outcome === "allow";
 			const userDecision = approved ? "allow" : "deny";
-			const reason = approved ? "User explicitly approved the inspected exact tool call."
-				: "User denied/cancelled, UI failed, or the call/context changed; no approval granted.";
+			const reason = APPROVAL_REASONS[outcome];
 			logDecision(ctx, { toolName, toolCallId: event.toolCallId, reviewId: verdict.reviewId,
-				inputSummary: rendered, decision: userDecision, confidence: verdict.confidence,
+				inputSummary: rendered, target, decision: userDecision, confidence: verdict.confidence,
 				reason, reviewerModel: verdict.reviewerModel, raw: verdict.raw, classifier: verdict.classifier,
-				source: "user", mode: state.mode, userDecision, approvalFingerprint: binding.fingerprint });
+				confirmation: verdict.confirmation, ...(verdict.confirmation ? { threshold: config.jevMinConfidence } : {}),
+				source: "user", mode: state.mode, userDecision, outcome, approvalFingerprint: binding.fingerprint });
 			return approved ? undefined : { block: true, reason };
 		}
 

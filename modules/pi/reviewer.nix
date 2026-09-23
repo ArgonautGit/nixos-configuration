@@ -155,7 +155,7 @@ let
     cp ${./reviewer}/lib/*.ts $out/lib/
     # Git-backed flakes omit untracked files. A wildcard alone can silently
     # package a broken extension when an existing module imports a new file.
-    for module in config context entry gate jev models picker reviewer state; do
+    for module in approval config context entry gate jev models picker preview reviewer state; do
       if ! test -f "$out/lib/$module.ts"; then
         echo "Missing reviewer module: $module.ts. Git-add new files before rebuilding." >&2
         exit 1

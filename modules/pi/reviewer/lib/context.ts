@@ -11,7 +11,7 @@ export const MAX_REVIEW_INPUT_CHARS = 60_000;
  * input characters. Each call is reviewed separately with its complete input;
  * copying whole arguments (e.g. file writes) into every later review would
  * permanently exhaust the context budget. */
-export const TOOL_CALL_SUMMARY_CHARS = 200;
+export const TOOL_CALL_SUMMARY_CHARS = 80;
 /** Assistant turns preceding this many latest user records are kept whole. */
 export const DEFAULT_WHOLE_TURNS = 2;
 /** Session entry written ONLY by the /reviewer-restate command handler. */
