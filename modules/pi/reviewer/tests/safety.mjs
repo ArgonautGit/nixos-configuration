@@ -164,11 +164,62 @@ export function registerSafetyTests({ harness, mockDecisions, classification, je
     assert.ok(parsed.some(r => r.role === 'assistant' && r.text === recent));
     for (let i = 0; i < 6; i++) assert.ok(parsed.some(r => r.role === 'user' && r.text === `Follow-up ${i}: do not activate.`));
     assert.ok(!parsed.some(r => r.text === old(0)), 'older turns are supporting context');
-    // Previously every old turn was required whole, which blocked this session.
-    const strict = buildReviewContext(h.ctx, { ...config, contextBudget: { ...config.contextBudget, wholeTurns: 8 } });
-    assert.equal(strict.complete, false);
-    assert.match(strict.reason, /exceed contextBudget/);
+    // More whole turns than fit: earlier assent turns shrink instead of blocking.
+    const wide = buildReviewContext(h.ctx, { ...config, contextBudget: { ...config.contextBudget, wholeTurns: 8 } });
+    assert.equal(wide.complete, true);
+    assert.match(wide.transcript, /\[earlier text omitted\]/);
+    assert.ok(recordsOf(wide.transcript).some(r => r.role === 'assistant' && r.text === recent));
+    assert.ok(wide.transcript.length <= config.contextBudget.maxChars);
     assert.equal(buildReviewContext(h.ctx, { ...config, contextBudget: { ...config.contextBudget, wholeTurns: 0 } }).complete, false);
+  });
+
+  test('executed tool calls collapse to names; blocked, failed or pending calls keep summaries', async () => {
+    const h = await harness();
+    const call = (id, name, args) => ({ type: 'toolCall', id, name, arguments: args });
+    h.sm.appendMessage({ ...assistant('Working.'), content: [{ type: 'text', text: 'Working.' },
+      ...Array.from({ length: 50 }, (_, i) => call(`ok${i}`, i % 2 ? 'read' : 'bash', { command: 'x'.repeat(300) + i }))] });
+    for (let i = 0; i < 50; i++) {
+      h.sm.appendMessage({ role: 'toolResult', toolCallId: `ok${i}`, toolName: i % 2 ? 'read' : 'bash', content: 'ok', isError: false, timestamp: 0 });
+    }
+    h.sm.appendMessage({ ...assistant('Next.'), content: [{ type: 'text', text: 'Next.' },
+      call('blocked', 'bash', { command: 'sudo nixos-rebuild switch' }), call('failed', 'bash', { command: 'false' }),
+      call('pending', 'edit', { path: 'a.nix', edits: [] })] });
+    h.sm.appendMessage({ role: 'toolResult', toolCallId: 'blocked', toolName: 'bash', content: 'REVIEWER DENIED', isError: true, timestamp: 0 });
+    h.sm.appendMessage({ role: 'toolResult', toolCallId: 'failed', toolName: 'bash', content: 'exit 1', isError: true, timestamp: 0 });
+    for (let i = 0; i < 30; i++) {
+      h.sm.appendMessage({ ...assistant(''), content: [call(`step${i}`, 'edit', { path: 'b.nix', edits: [{ oldText: 'o'.repeat(400), newText: 'n' }] })] });
+      h.sm.appendMessage({ role: 'toolResult', toolCallId: `step${i}`, toolName: 'edit', content: 'ok', isError: false, timestamp: 0 });
+    }
+    h.sm.appendMessage(user('Yes, go ahead with that.'));
+    const context = buildReviewContext(h.ctx, config);
+    assert.equal(context.complete, true);
+    const turn = recordsOf(context.transcript).find(r => r.role === 'assistant' && r.text.includes('Working.'));
+    assert.match(turn.text, /^Working\.\n\[ran: bash×25, read×25\]\nNext\./);
+    assert.match(turn.text, /\[ran: edit×30\]$/, 'one merged marker for thirty separate agent steps');
+    assert.doesNotMatch(turn.text, /xxxxxxxx|oooooooo/);
+    assert.match(turn.text, /proposes tool: bash; input: \{"command":"sudo nixos-rebuild switch"\}/);
+    assert.match(turn.text, /proposes tool: bash; input: \{"command":"false"\}/);
+    assert.match(turn.text, /proposes tool: edit/);
+    assert.ok(turn.text.length < 400);
+  });
+
+  test('an oversized earlier assent turn is shortened (keeping its end) instead of blocking', async () => {
+    const h = await harness();
+    h.sm.appendMessage(assistant('EARLY_START ' + 'plan detail '.repeat(1500) + ' EARLY_END'));
+    h.sm.appendMessage(user('Sounds good.'));
+    h.sm.appendMessage(assistant('Done; shall I commit?'));
+    h.sm.appendMessage(user('Yes, commit.'));
+    const context = buildReviewContext(h.ctx, config);
+    assert.equal(context.complete, true);
+    const parsed = recordsOf(context.transcript);
+    const early = parsed.find(r => r.text.includes('EARLY_END'));
+    assert.match(early.text, /^\[earlier text omitted\]…/);
+    assert.doesNotMatch(early.text, /EARLY_START/);
+    assert.ok(parsed.some(r => r.role === 'assistant' && r.text === 'Done; shall I commit?'));
+    assert.equal(parsed.find(r => r.latestUser).text, 'Yes, commit.');
+    assert.ok(parsed.some(r => r.role === 'user' && r.text === 'Sounds good.'));
+    assert.doesNotMatch(context.authorization, /EARLY_END/, 'shortened turns are support, not authorization');
+    assert.ok(context.transcript.length <= config.contextBudget.maxChars);
   });
 
   test('/reviewer-restate supersedes earlier user records; quoted command text cannot', async () => {

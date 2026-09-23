@@ -49,9 +49,10 @@ let
       maxMessages = 40;
       # Leave room for rules + complete tool input in Jev's 32K context.
       maxChars = 16000;
-      # Assistant turns before this many latest user messages are kept whole
-      # (assent referents). Older turns are shortened when needed; all user
-      # messages since the latest /reviewer-restate are always kept whole.
+      # Assent referents: the assistant turn before the latest user message must
+      # fit whole; turns before the previous (wholeTurns - 1) user messages are
+      # whole when they fit, else shortened. All user messages since the latest
+      # /reviewer-restate are always kept whole.
       wholeTurns = 2;
     };
 

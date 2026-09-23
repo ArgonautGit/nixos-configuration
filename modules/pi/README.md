@@ -8,7 +8,7 @@ Fail-closed by default; chat reviewers remain selectable.
 **Safety repair:** original user messages and the assistant turns preceding the
 latest user replies are preserved whole, including across compaction. If that
 evidence cannot fit, code blocks the review before contacting a model. Earlier
-tool calls are summarized and older assistant turns may be shortened, so the
+tool calls are collapsed or summarized and older assistant turns may be shortened, so the
 required evidence no longer grows with every agent step (see below). This fixes the
 known clipping path, not arbitrary classifier mistakes: this is still **not a
 security boundary**. The automatic confidence threshold remains 0.9.
@@ -97,7 +97,8 @@ Options:
 - `denyTerminate` — alwaysDeny matches that should also stop the agent
 - `sessionPersistence` — restore mode + model on /resume (stored in session)
 - `contextBudget` — transcript budget for the reviewer (maxMessages/maxChars), plus
-  `wholeTurns`: assistant turns before this many latest user messages stay whole (default 2)
+  `wholeTurns` (default 2): the turn before the latest user message must fit whole; turns
+  before the previous `wholeTurns - 1` user messages stay whole when they fit
 - `rules` — verbatim reviewer rules text (injected into the reviewer's system prompt)
 
 ## Changing behavior
@@ -173,21 +174,26 @@ The reviewer reads original messages from `getBranch()`, not just the compacted
 model context. **Required** (kept whole, in order, with original roles):
 
 - every user record since the latest `/reviewer-restate` (all of them if none);
-- the assistant turn preceding each of the latest `wholeTurns` (default 2) user
-  records. All assistant messages of a turn form ONE record, preserving
-  multi-message proposals that a short "yes" may refer to.
+- the assistant turn the latest user record answers. All assistant messages of
+  a turn form ONE record, preserving multi-message proposals that a short "yes"
+  may refer to.
+
+The turns before the previous `wholeTurns - 1` (default 1) user records are kept
+whole when they fit; otherwise they are shortened from the start (the end of a
+turn is what the user answered) and are supporting context, not authorization.
+Older assistant turns are supporting context: included when they fit, otherwise
+shortened or omitted. Trade-off: a restriction stated only by the assistant in
+an earlier turn can be lost; restrictions written by the user are never dropped.
 
 Assistant thinking is excluded. Abandoned branches are excluded; summaries never
-replace user authority. Tool calls inside assistant turns are summarized as the
-tool name plus the first 80 characters of their input, with the omitted length.
-Each call was reviewed separately with its complete input, and copying whole
+replace user authority. Tool calls that already **executed** (a tool result with
+`isError: false`) collapse to their names, merged per turn: `[ran: bash×12, edit×3]`.
+Their results are in the transcript and each call was reviewed separately, so
+evidence no longer grows with the number of agent steps. Blocked, failed or
+pending calls, which a user reply may refer to, keep a summary: the tool name plus
+the first 80 characters of their input, with the omitted length. Copying whole
 arguments (such as file writes) into every later review used to exhaust the
 budget permanently. The call under review is always sent complete.
-
-Older assistant turns are supporting context: included when they fit, otherwise
-shortened from the start (the end of a turn is what the user answered) or
-omitted. Trade-off: a restriction stated only by the assistant in an older turn
-can be lost; restrictions written by the user are never dropped.
 
 Required evidence must fit both configured character and record budgets, including
 JSON escaping. Missing original history, unsupported non-text user evidence, and
@@ -198,8 +204,8 @@ Optional supporting data may still be clipped/omitted: up to eight records,
 including two recent review outcomes and a summary (at most 2,000 characters;
 other optional records at most 800 each). Its omission cannot authorize anything.
 
-**Remaining limits:** the user records plus the recent assistant turns must still
-fit; a very long recent turn, many user messages, a pasted log, or an image in a
+**Remaining limits:** the user records plus the latest assistant turn must still
+fit; a very long latest turn, many user messages, a pasted log, or an image in a
 user message (Jev cannot see images) blocks review. Compaction does not erase
 restrictions or reset this budget. To recover without a fresh session, run
 `/reviewer-restate <complete current instructions>`: it records a user-authored

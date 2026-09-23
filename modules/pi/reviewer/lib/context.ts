@@ -58,7 +58,33 @@ function restatementText(entry: unknown): string | undefined {
 
 type Extracted = Omit<ExtractedMessage, "entry">;
 
-function extractMessage(message: unknown): Extracted[] {
+const RAN = /^\[ran: (.*)\]$/;
+
+/** "[ran: bash×2, read]" for tool calls that already executed successfully. */
+function ranMarker(names: string[]): string {
+	const counts = new Map<string, number>();
+	for (const name of names) counts.set(name, (counts.get(name) ?? 0) + 1);
+	return `[ran: ${[...counts].map(([name, n]) => n > 1 ? `${name}×${n}` : name).join(", ")}]`;
+}
+
+/** Merge adjacent run markers (one per agent step) into a single line. */
+function mergeRanMarkers(lines: string[]): string[] {
+	const out: string[] = [];
+	let run: string[] = [];
+	const flush = () => { if (run.length) out.push(ranMarker(run)); run = []; };
+	for (const line of lines) {
+		const match = RAN.exec(line);
+		if (!match) { flush(); out.push(line); continue; }
+		for (const item of match[1].split(", ")) {
+			const [name, n] = item.split("×");
+			for (let i = 0; i < (Number(n) || 1); i++) run.push(name);
+		}
+	}
+	flush();
+	return out;
+}
+
+function extractMessage(message: unknown, succeeded: Set<string>): Extracted[] {
 	const m = message as { role?: string; content?: unknown; toolName?: string; command?: string;
 		output?: string; excludeFromContext?: boolean; summary?: string };
 	if (!m) return [];
@@ -70,11 +96,20 @@ function extractMessage(message: unknown): Extracted[] {
 			return text ? [{ role: m.role, text: m.role === "toolResult" ? `(result of ${m.toolName}) ${text}` : text }] : [];
 		}
 		case "assistant": {
-			const parts = Array.isArray(m.content) ? m.content.flatMap(c => {
-				if (c?.type === "text" && typeof c.text === "string") return [c.text];
-				if (c?.type === "toolCall") return [summarizeToolCall(c.name, c.arguments)];
-				return []; // Do not include thinking blocks.
-			}) : [];
+			// Executed calls are past actions whose results are in the transcript;
+			// each was reviewed separately, so only their names are kept. Blocked,
+			// failed or pending calls may be what a user reply refers to: summarize.
+			const parts: string[] = [];
+			let ran: string[] = [];
+			const flush = () => { if (ran.length) parts.push(ranMarker(ran)); ran = []; };
+			for (const c of Array.isArray(m.content) ? m.content : []) {
+				if (c?.type === "text" && typeof c.text === "string") { flush(); parts.push(c.text); }
+				else if (c?.type === "toolCall") {
+					if (typeof c.id === "string" && succeeded.has(c.id)) ran.push(String(c.name));
+					else { flush(); parts.push(summarizeToolCall(c.name, c.arguments)); }
+				} // Do not include thinking blocks.
+			}
+			flush();
 			return parts.length ? [{ role: "assistant", text: parts.join("\n") }] : [];
 		}
 		case "bashExecution":
@@ -86,10 +121,10 @@ function extractMessage(message: unknown): Extracted[] {
 	}
 }
 
-function extractEntry(entry: unknown): Extracted[] {
+function extractEntry(entry: unknown, succeeded: Set<string>): Extracted[] {
 	const e = entry as { type?: string; message?: unknown; summary?: string; retainedTail?: unknown[];
 		customType?: string; content?: unknown; data?: Record<string, unknown> };
-	if (e.type === "message") return extractMessage(e.message);
+	if (e.type === "message") return extractMessage(e.message, succeeded);
 	if (e.type === "compaction" || e.type === "branch_summary") {
 		return [
 			{ role: "summary" as const, text: e.summary ?? "" },
@@ -118,7 +153,15 @@ function extractEntry(entry: unknown): Extracted[] {
 }
 
 function extractMessages(entries: unknown[]): ExtractedMessage[] {
-	return entries.flatMap((entry, index) => extractEntry(entry).map(m => ({ ...m, entry: index })));
+	// Only pi writes tool results; isError must be exactly false to count as executed.
+	const succeeded = new Set<string>();
+	for (const entry of entries) {
+		const m = (entry as { type?: string; message?: { role?: string; toolCallId?: unknown; isError?: unknown } }).message;
+		if ((entry as { type?: string }).type === "message" && m?.role === "toolResult" && typeof m.toolCallId === "string" && m.isError === false) {
+			succeeded.add(m.toolCallId);
+		}
+	}
+	return entries.flatMap((entry, index) => extractEntry(entry, succeeded).map(m => ({ ...m, entry: index })));
 }
 
 function clip(text: string, max: number): string {
@@ -158,10 +201,12 @@ interface Unit {
 /** Read ORIGINAL messages on the active branch, including before compaction.
  * Required evidence is never clipped or omitted and summaries cannot replace
  * it. Required: every user record (since the latest user /reviewer-restate)
- * and the assistant turn preceding each of the latest `wholeTurns` user
- * records, because even a short assent can adopt restrictions spread across
- * several messages. Older assistant turns are supporting context; they may be
- * shortened so that required evidence stays bounded in long sessions.
+ * and the assistant turn the latest user record answers, because even a short
+ * assent can adopt restrictions spread across several messages. The turns
+ * before the previous `wholeTurns - 1` user records are kept whole when they
+ * fit and otherwise shortened (keeping their end); older turns are supporting
+ * context. Executed tool calls collapse to their names, so evidence does not
+ * grow with the number of agent steps.
  */
 export function buildReviewContext(ctx: ExtensionContext, config: ReviewerConfig): ReviewContext {
 	try {
@@ -202,7 +247,8 @@ export function buildReviewContext(ctx: ExtensionContext, config: ReviewerConfig
 			if (m.role === "user") {
 				let referent: Unit | undefined;
 				if (turn.length) {
-					referent = { role: "assistant", text: turn.map(j => messages[j].text).join("\n"), order: turn.at(-1)!, turn: true };
+					const text = mergeRanMarkers(turn.flatMap(j => messages[j].text.split("\n"))).join("\n");
+					referent = { role: "assistant", text, order: turn.at(-1)!, turn: true };
 					units.push(referent);
 					turn = [];
 				}
@@ -225,10 +271,13 @@ export function buildReviewContext(ctx: ExtensionContext, config: ReviewerConfig
 			|| maxChars < 128 || maxMessages < 1 || wholeTurns < 1) {
 			return incomplete("Invalid permission context budget.");
 		}
+		// Must fit whole: user records and the turn the latest user record answers.
 		const required = new Set<Unit>(users);
-		for (const u of users.slice(-wholeTurns)) if (u.referent) required.add(u.referent);
+		if (latest.referent) required.add(latest.referent);
+		// Earlier assent turns (newest first) are whole when they fit, else shortened.
+		const earlier = users.slice(-wholeTurns, -1).map(u => u.referent).filter((u): u is Unit => u !== undefined).reverse();
 
-		const notice = `[Complete: every user record${restatedAt >= 0 ? " since the user's latest restatement" : ""} and the assistant turns before the latest ${wholeTurns} user records. Earlier tool calls are summarized (each call is reviewed separately). Other history may be shortened or omitted. Summaries are not authorization.]\n`;
+		const notice = `[Complete: every user record${restatedAt >= 0 ? " since the user's latest restatement" : ""} and the assistant turn before the latest one${wholeTurns > 1 ? `; up to ${wholeTurns - 1} earlier assent turns are complete unless shortened ("[earlier text omitted]")` : ""}. "[ran: …]" names executed tool calls (each was reviewed separately); other calls are summarized. Other history may be shortened or omitted. Summaries are not authorization.]\n`;
 		const selected = new Map<Unit, string>();
 		const encode = (u: Unit, text = u.text) => JSON.stringify({ role: u.role,
 			...(u === latest ? { latestUser: true } : {}),
@@ -239,23 +288,33 @@ export function buildReviewContext(ctx: ExtensionContext, config: ReviewerConfig
 		for (const u of required) {
 			const line = encode(u);
 			if (selected.size >= maxMessages || line.length + 1 > remaining) {
-				return incomplete("Complete user instructions and recent assent referents exceed contextBudget. Restate your current instructions with /reviewer-restate, raise the budget, or start a fresh session; compaction does not reset permissions.");
+				return incomplete("User instructions and the assistant turn they answer exceed contextBudget. Restate your current instructions with /reviewer-restate, raise the budget, or start a fresh session; compaction does not reset permissions.");
 			}
 			selected.set(u, line);
 			remaining -= line.length + 1;
+		}
+		const shortened: Unit[] = [];
+		for (const u of earlier) {
+			const line = encode(u);
+			if (selected.size < maxMessages && line.length + 1 <= remaining) {
+				selected.set(u, line);
+				remaining -= line.length + 1;
+			} else shortened.push(u);
 		}
 		const ordered = (map: Map<Unit, string>) => [...map].sort(([a], [b]) => a.order - b.order).map(([, line]) => line).join("\n");
 		const authorization = ordered(selected);
 		const recent = [...units].reverse();
 		const summary = recent.find(u => u.role === "summary");
 		const optional = [...new Set([
+			...shortened,
 			...recent.filter(u => u.role === "reviewerDecision").slice(0, 2),
 			...(summary === undefined ? [] : [summary]),
-			...recent.filter(u => !required.has(u)),
-		])].slice(0, 8);
+			...recent.filter(u => !selected.has(u)),
+		])].slice(0, 8 + shortened.length);
 		for (const u of optional) {
 			if (selected.has(u) || selected.size >= maxMessages || remaining < 80) continue;
-			const limit = u.role === "summary" ? 2000 : 800;
+			// Shortened assent turns keep as much of their end as fits, leaving room for other support.
+			const limit = shortened.includes(u) ? Math.max(800, remaining - 1500) : u.role === "summary" ? 2000 : 800;
 			const shorten = (n: number) => u.turn ? clipStart(u.text, n) : clip(u.text, n);
 			let low = 0, high = Math.min(u.text.length, limit);
 			while (low < high) {
