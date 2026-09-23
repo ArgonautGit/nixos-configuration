@@ -26,7 +26,8 @@ export interface ReviewerConfig {
 	alwaysDeny: AllowDenyRule[];
 	/** deny AND stop the agent (for catastrophic calls) */
 	denyTerminate: AllowDenyRule[];
-	contextBudget: { maxMessages: number; maxChars: number };
+	/** wholeTurns: assistant turns before this many latest user records stay whole (default 2) */
+	contextBudget: { maxMessages: number; maxChars: number; wholeTurns?: number };
 }
 
 export const DEFAULT_CONFIG: ReviewerConfig = {
@@ -40,7 +41,7 @@ export const DEFAULT_CONFIG: ReviewerConfig = {
 	alwaysAllow: [{ tool: "read" }],
 	alwaysDeny: [{ tool: "bash", pattern: "\\brm\\s+-rf\\s+(/|~)\\b" }],
 	denyTerminate: [],
-	contextBudget: { maxMessages: 40, maxChars: 60_000 },
+	contextBudget: { maxMessages: 40, maxChars: 60_000, wholeTurns: 2 },
 };
 
 /** Locate config.json: env override > beside the extension > global ~/.pi path. */

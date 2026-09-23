@@ -49,6 +49,10 @@ let
       maxMessages = 40;
       # Leave room for rules + complete tool input in Jev's 32K context.
       maxChars = 16000;
+      # Assistant turns before this many latest user messages are kept whole
+      # (assent referents). Older turns are shortened when needed; all user
+      # messages since the latest /reviewer-restate are always kept whole.
+      wholeTurns = 2;
     };
 
     # Reviewer rules: verbatim text injected into the reviewer's system prompt.
@@ -134,7 +138,7 @@ let
       alwaysDeny = map mkRule cfg.alwaysDeny;
       denyTerminate = map mkRule cfg.denyTerminate;
       contextBudget = {
-        inherit (cfg.contextBudget) maxMessages maxChars;
+        inherit (cfg.contextBudget) maxMessages maxChars wholeTurns;
       };
     }
   );

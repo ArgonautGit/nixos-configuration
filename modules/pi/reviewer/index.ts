@@ -9,6 +9,7 @@
  *
  * Commands:
  *   /perm [deny|ask|allow|status|deny-next]
+ *   /reviewer-restate <current instructions>
  *   /reviewer-model
  *   /reviewer-explain [last|deny|entry-id] [context]
  *
@@ -21,7 +22,7 @@ import { randomUUID } from "node:crypto";
 import { bindCall, confirmExactCall, invalidateApprovals, pendingDenyNext } from "./lib/gate.ts";
 import { createState, MODE_LABELS, type Mode, type ReviewerState, type Verdict } from "./lib/state.ts";
 import { loadConfig, loadRules, type ReviewerConfig } from "./lib/config.ts";
-import { buildReviewContext, matchesRule, renderInput } from "./lib/context.ts";
+import { buildReviewContext, matchesRule, renderInput, RESTATE_ENTRY } from "./lib/context.ts";
 import { pickReviewerModel } from "./lib/picker.ts";
 import { findReviewerModel, hasReviewerAuth } from "./lib/models.ts";
 import { runReviewer, SCHEMA_MARKER } from "./lib/reviewer.ts";
@@ -368,6 +369,28 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			ctx.ui.notify("Usage: /perm [deny|ask|allow|status|deny-next]", "warning");
+		},
+	});
+
+	// Explicit, user-typed checkpoint. Earlier user records stop being required
+	// evidence (they remain optional history), so long sessions or pasted logs
+	// need not end the session. Only this handler writes the entry; prose and
+	// tool output quoting the command cannot create it.
+	pi.registerCommand("reviewer-restate", {
+		description: "Restate your complete current instructions for the reviewer; earlier messages become optional history",
+		handler: async (args, ctx) => {
+			const text = (args ?? "").trim();
+			if (!text) {
+				ctx.ui.notify("Usage: /reviewer-restate <complete current instructions, including every restriction that still applies>", "warning");
+				return;
+			}
+			invalidateApprovals(state);
+			try {
+				pi.appendEntry(RESTATE_ENTRY, { text });
+				ctx.ui.notify("Reviewer instructions restated; earlier user messages are now supporting history, not required evidence.", "info");
+			} catch {
+				ctx.ui.notify("Could not persist the restatement; earlier messages remain required evidence.", "error");
+			}
 		},
 	});
 

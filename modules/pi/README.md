@@ -5,9 +5,11 @@ reviewer evaluates each call against the conversation and permission rules.
 The default is **Jev 1.13 via OpenRouter Decisions**, not chat completions.
 Fail-closed by default; chat reviewers remain selectable.
 
-**Safety repair:** original user messages and the assistant turns preceding user
-replies are now preserved whole, including across compaction. If that evidence
-cannot fit, code blocks the review before contacting a model. This fixes the
+**Safety repair:** original user messages and the assistant turns preceding the
+latest user replies are preserved whole, including across compaction. If that
+evidence cannot fit, code blocks the review before contacting a model. Earlier
+tool calls are summarized and older assistant turns may be shortened, so the
+required evidence no longer grows with every agent step (see below). This fixes the
 known clipping path, not arbitrary classifier mistakes: this is still **not a
 security boundary**. The automatic confidence threshold remains 0.9.
 See the [assessment and reproducible results](reviewer/tests/ASSESSMENT.md).
@@ -26,6 +28,7 @@ tool call
   ├─ 1. STATIC CHECKS      alwaysDeny → block; alwaysAllow → pass
   │                        (allow mode bypasses static/model checks)
   ├─ 2. CONTEXT CHECK      missing/oversized required evidence → block, no model
+  │                        (recover with /reviewer-restate)
   ├─ 3. REVIEWER           complete evidence + full proposed call + rules.md
   │                        → deny / uncertain / invalid / failed → block
   │                        → low-confidence allow → deny mode: blocked, no prompt
@@ -53,6 +56,8 @@ Commands:
 - `/perm deny-next` — block exactly one new tool preflight; reissuing renews its ID
 - `/reviewer-model` — Jev models plus the scoped chat models (or full chat catalogue)
 - `/reviewer-explain [last|deny|entry-id] [context]` — inspect a recorded result without a model call
+- `/reviewer-restate <instructions>` — restate your complete current instructions; earlier
+  user messages stop being required evidence (see Context selection)
 
 A status widget above the editor always shows `reviewer: <mode> · model: <model>`.
 `/perm status` also reports the pending deny-next ID. This explicit command is
@@ -83,7 +88,8 @@ Options:
   of that tool). alwaysDeny fires even in ask mode with no user prompt.
 - `denyTerminate` — alwaysDeny matches that should also stop the agent
 - `sessionPersistence` — restore mode + model on /resume (stored in session)
-- `contextBudget` — transcript budget for the reviewer (maxMessages/maxChars)
+- `contextBudget` — transcript budget for the reviewer (maxMessages/maxChars), plus
+  `wholeTurns`: assistant turns before this many latest user messages stay whole (default 2)
 - `rules` — verbatim reviewer rules text (injected into the reviewer's system prompt)
 
 ## Changing behavior
@@ -156,10 +162,24 @@ References:
 ## Context selection and false blocks
 
 The reviewer reads original messages from `getBranch()`, not just the compacted
-model context. Every user record and every assistant message in the turn preceding
-a user reply is retained whole, in order and with its original role. This preserves
-multi-message proposals that a short "yes" may refer to. Assistant thinking is
-excluded. Abandoned branches are excluded; summaries never replace user authority.
+model context. **Required** (kept whole, in order, with original roles):
+
+- every user record since the latest `/reviewer-restate` (all of them if none);
+- the assistant turn preceding each of the latest `wholeTurns` (default 2) user
+  records. All assistant messages of a turn form ONE record, preserving
+  multi-message proposals that a short "yes" may refer to.
+
+Assistant thinking is excluded. Abandoned branches are excluded; summaries never
+replace user authority. Tool calls inside assistant turns are summarized as the
+tool name plus the first 200 characters of their input, with the omitted length.
+Each call was reviewed separately with its complete input, and copying whole
+arguments (such as file writes) into every later review used to exhaust the
+budget permanently. The call under review is always sent complete.
+
+Older assistant turns are supporting context: included when they fit, otherwise
+shortened from the start (the end of a turn is what the user answered) or
+omitted. Trade-off: a restriction stated only by the assistant in an older turn
+can be lost; restrictions written by the user are never dropped.
 
 Required evidence must fit both configured character and record budgets, including
 JSON escaping. Missing original history, unsupported non-text user evidence, and
@@ -170,11 +190,16 @@ Optional supporting data may still be clipped/omitted: up to eight records,
 including two recent review outcomes and a summary (at most 2,000 characters;
 other optional records at most 800 each). Its omission cannot authorize anything.
 
-**Conservative trade-off:** long histories and long preceding assistant turns can
-now block legitimate work. Compaction does not erase restrictions or reset this
-budget. Start a fresh session with complete current instructions, or deliberately
-increase the context budget within the model's request cap. There is no automatic
-summary-based reset or human-override prompt for incomplete context.
+**Remaining limits:** the user records plus the recent assistant turns must still
+fit; a very long recent turn, many user messages, a pasted log, or an image in a
+user message (Jev cannot see images) blocks review. Compaction does not erase
+restrictions or reset this budget. To recover without a fresh session, run
+`/reviewer-restate <complete current instructions>`: it records a user-authored
+checkpoint (only the command can create it; quoted command text in prose or tool
+output does not). Earlier user records, including images, become supporting
+history marked `supersededByRestatement`, so include every restriction that should
+still apply. Restating invalidates pending approvals. There is no automatic or
+model-written summary reset, and no human-override prompt for incomplete context.
 
 Historical review outcomes say whether a call was blocked, without copying the
 old rationale/confidence back into the next review. The full original verdict
