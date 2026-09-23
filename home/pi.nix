@@ -25,7 +25,12 @@ let
   '';
 in
 {
-  home.packages = [ pkgs.pi-coding-agent ];
+  home.packages = [
+    pkgs.pi-coding-agent
+    # Clipboard backend for Pi's Ctrl+V image paste (app.clipboard.pasteImage).
+    # On Wayland, Pi reads images from the clipboard by running `wl-paste`.
+    pkgs.wl-clipboard
+  ];
 
   home.file.".pi/agent/models.json".text = builtins.toJSON {
     # OpenRouter app attribution. pi only sends these itself when install
