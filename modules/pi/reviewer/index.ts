@@ -2,7 +2,8 @@
  * Reviewer — LLM permission gate for tool calls.
  *
  * Modes (default: deny):
- *   deny — every reviewed tool call needs an explicit reviewer ALLOW (fail-closed)
+ *   deny — every reviewed tool call needs an explicit reviewer ALLOW (fail-closed);
+ *          low-confidence Jev allows are blocked without prompting
  *   ask  — reviewer advises; the user must explicitly allow each call
  *   allow — unconstrained; reviewer bypassed
  *
@@ -254,6 +255,10 @@ export default function (pi: ExtensionAPI) {
 		const description = pi.getAllTools().find(tool => tool.name === toolName)?.description;
 		if (!binding.current()) return { block: true, reason: "Call aborted or tool/permission context changed before review; submit a fresh call." };
 		const verdict = await runReviewer({ ...ctx, signal: binding.signal }, state, config, rules, state.reviewerModel!, toolName, JSON.parse(serialized), description);
+		// Only ask mode reaches the human gate. Deny mode never prompts: a
+		// low-confidence Jev allow is a final block there, like any other deny.
+		const askUser = state.mode === "ask"
+			&& (verdict.decision === "allow" || verdict.confirmation === "low-confidence-allow");
 
 		logDecision(ctx, {
 			toolName,
@@ -269,13 +274,15 @@ export default function (pi: ExtensionAPI) {
 			mode: state.mode,
 			confirmation: verdict.confirmation,
 			classifier: verdict.classifier,
-			stage: verdict.confirmation === "low-confidence-allow" || (state.mode === "ask" && verdict.decision === "allow")
-				? "recommendation" : "final",
+			stage: askUser ? "recommendation" : "final",
 		});
 
-		if (verdict.decision === "deny" && verdict.confirmation !== "low-confidence-allow") {
+		if (verdict.decision === "deny" && !askUser) {
 			notifyVerdict(ctx, verdict, toolName);
-			return { block: true, reason: `REVIEWER DENIED this tool call: ${verdict.reason}` };
+			const hint = verdict.confirmation === "low-confidence-allow"
+				? " Deny mode blocks low-confidence allows without prompting; the user can switch to /perm ask to approve such calls manually."
+				: "";
+			return { block: true, reason: `REVIEWER DENIED this tool call: ${verdict.reason}${hint}` };
 		}
 
 		if (!binding.current()) {
@@ -284,10 +291,10 @@ export default function (pi: ExtensionAPI) {
 				decision: "deny", confidence: "high", source: "fail-closed", reason, mode: state.mode });
 			return { block: true, reason };
 		}
-		// Low-confidence Jev ALLOW is not approval. It can only proceed with
-		// explicit human consent for this exact call. Deny/uncertain/errors above
-		// never reach the confirmation path, regardless of ask mode.
-		if (state.mode === "ask" || verdict.confirmation === "low-confidence-allow") {
+		// Low-confidence Jev ALLOW is not approval. In ask mode it can only proceed
+		// with explicit human consent for this exact call; deny mode blocked it
+		// above. Deny/uncertain/errors never reach the confirmation path.
+		if (askUser) {
 			if (!ctx.hasUI) {
 				const reason = `Human approval required without a UI — blocked (fail-closed). ${verdict.reason}`;
 				logDecision(ctx, { toolName, toolCallId: event.toolCallId, inputSummary: rendered, reviewId: verdict.reviewId,

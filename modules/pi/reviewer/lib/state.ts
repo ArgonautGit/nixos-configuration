@@ -48,7 +48,7 @@ export function createState(): ReviewerState {
 }
 
 export const MODE_LABELS: Record<Mode, string> = {
-	deny: "deny — reviewer ALLOW required; low-confidence Jev allows need exact-call human approval",
+	deny: "deny — reviewer ALLOW required; low-confidence Jev allows are blocked automatically",
 	ask: "ask — reviewer advises, you approve or deny each call",
 	allow: "allow — static/model review bypassed; explicit deny-next still applies",
 };

@@ -28,8 +28,9 @@ tool call
   ├─ 2. CONTEXT CHECK      missing/oversized required evidence → block, no model
   ├─ 3. REVIEWER           complete evidence + full proposed call + rules.md
   │                        → deny / uncertain / invalid / failed → block
-  │                        → low-confidence allow → human approval required
-  └─ 4. USER GATE          ask mode OR valid low-confidence Jev allow:
+  │                        → low-confidence allow → deny mode: blocked, no prompt
+  │                                                 ask mode: human approval required
+  └─ 4. USER GATE          ask mode only (allows and low-confidence Jev allows):
                            inspect full exact call, then explicitly approve
                            (changed call/context, cancellation, no UI → block)
 ```
@@ -42,8 +43,8 @@ Every decision is appended to the session as a `reviewer-decision` entry
 
 | mode  | behavior |
 |-------|----------|
-| deny  | default. Reviewed calls require reviewer ALLOW; below-threshold Jev allows additionally require exact-call human approval. |
-| ask   | reviewer deny/uncertain/errors block; valid allows additionally require exact-call human approval. No UI → block. |
+| deny  | default. Reviewed calls require a reviewer ALLOW at or above the confidence threshold; everything else, including below-threshold Jev allows, is blocked automatically. Never prompts. |
+| ask   | reviewer deny/uncertain/errors block; valid allows, including below-threshold Jev allows, additionally require exact-call human approval. No UI → block. |
 | allow | bypasses static/model review, but an explicitly armed deny-next still blocks one preflight. |
 
 Commands:
@@ -118,8 +119,9 @@ Fail-closed verdicts are deliberately NOT cached — a retry gets a fresh review
   Configured base URLs ending in `/api/v1` map to `/api/alpha/decisions`, retaining
   proxy prefixes. Redirects are rejected. Provider-side account routing settings apply.
 - Numeric confidence and the probability distribution are validated. `uncertain`
-  always blocks; below-threshold `allow` blocks automatic execution and requires
-  exact-call human approval. Deny, uncertainty, malformed replies, transport errors,
+  always blocks; below-threshold `allow` blocks automatic execution. Deny mode
+  treats it as a final block; ask mode offers exact-call human approval. Deny,
+  uncertainty, malformed replies, transport errors,
   and incomplete context never offer this override.
   Displayed reasons report the classification and scores, **not invented reasoning**.
   `/reviewer-explain ... context` shows questions under SYSTEM and state under USER.
@@ -181,7 +183,8 @@ remains available through `/reviewer-explain`. Rules also distinguish Pi's
 allowlist `printenv`, whole-environment dumps, or any shell command.
 
 The automatic threshold remains 0.9; valid verdicts are never retried to obtain
-an allow. For a validated below-threshold Jev allow, the UI first opens a scrollable
+an allow. In deny mode a validated below-threshold Jev allow is blocked without a
+prompt (switch to `/perm ask` to approve such calls manually). In ask mode, the UI first opens a scrollable
 editor containing the complete tool name, call ID, working directory, and arguments.
 Editing the preview denies approval; it cannot modify the tool call. Submit the
 unchanged inspection to proceed, then select **Allow this call**;

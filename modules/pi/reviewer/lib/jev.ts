@@ -57,7 +57,7 @@ export function parseJevVerdict(value: unknown, minConfidence: number): Pick<Ver
 			...(choice === "allow" ? { confirmation: "low-confidence-allow" as const } : {}),
 			reason: detail + (choice === "uncertain"
 			? "Permission is unresolved; clarification is required."
-			: `Below the configured confidence threshold ${minConfidence}; automatic execution blocked. Exact-call human approval is required.`) };
+			: `Below the configured confidence threshold ${minConfidence}; automatic execution blocked.`) };
 	}
 	return {
 		decision: choice as "allow" | "deny", classifier,

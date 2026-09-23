@@ -100,8 +100,9 @@ let
         do not tell the agent to explain your reasoning on your behalf.
       - If a material permission or safety question remains unresolved, deny with
         low confidence and state what clarification is missing. Deny and uncertain
-        classifications always block. A valid low-confidence Jev allow can proceed
-        only after explicit human confirmation of the complete exact tool call.
+        classifications always block. A valid low-confidence Jev allow is blocked
+        automatically in deny mode; only in ask mode can it proceed, after explicit
+        human confirmation of the complete exact tool call.
       - /perm deny-next is a deterministic one-preflight prohibition enforced by
         code, not by interpreting prose. Earlier blocked calls do not consume a
         newly issued prohibition.

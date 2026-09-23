@@ -179,10 +179,26 @@ export function registerSafetyTests({ harness, mockDecisions, classification, je
     assert.doesNotMatch(JSON.stringify(h.notices), /PRIVATE_STORAGE_ERROR/);
   });
 
-  test('a valid low-confidence allow needs full inspection and an exact-call human approval; never cached', async t => {
+  test('deny mode blocks a valid low-confidence allow automatically, without any prompt', async t => {
     const requests = mockDecisions(t, classification('allow', 0.69));
-    for (const defaultMode of ['deny', 'ask']) {
-      const h = await harness({ config: { ...jevConfig, defaultMode }, selection: 'Allow this call' });
+    const h = await harness({ config: jevConfig, selection: 'Allow this call' });
+    const result = await h.call({ command: 'true' }, 'bash');
+    assert.equal(result.block, true);
+    assert.match(result.reason, /REVIEWER DENIED/);
+    assert.match(result.reason, /\/perm ask/);
+    assert.equal(h.editors.length + h.selections.length, 0);
+    const logged = h.sm.getBranch().at(-1).data;
+    assert.equal(logged.source, 'reviewer');
+    assert.equal(logged.stage, 'final');
+    assert.equal(logged.confirmation, 'low-confidence-allow');
+    assert.match(buildReviewContext(h.ctx, config).transcript, /already BLOCKED/);
+    assert.equal(requests.length, 1, 'one model request, never retrying a valid verdict');
+  });
+
+  test('in ask mode, a valid low-confidence allow needs full inspection and an exact-call human approval; never cached', async t => {
+    const requests = mockDecisions(t, classification('allow', 0.69));
+    {
+      const h = await harness({ config: { ...jevConfig, defaultMode: 'ask' }, selection: 'Allow this call' });
       const input = { command: 'echo ' + 'x'.repeat(2300) + ' DISTINCT_TAIL', timeout: 7 };
       assert.equal(await h.call(input, 'bash'), undefined);
       const shown = JSON.parse(h.editors[0][1]);
@@ -198,13 +214,13 @@ export function registerSafetyTests({ harness, mockDecisions, classification, je
       assert.equal(h.editors.length, 2);
       assert.notEqual(h.sm.getBranch().at(-1).data.approvalFingerprint, first.approvalFingerprint);
     }
-    assert.equal(requests.length, 4, 'one model request per call, never retrying a valid verdict');
+    assert.equal(requests.length, 2, 'one model request per call, never retrying a valid verdict');
   });
 
   test('a pending recommendation never becomes a fictional completed block in later context', async t => {
     mockDecisions(t, classification('allow', 0.6));
     let h;
-    h = await harness({ config: jevConfig, selection: 'Allow this call', editor: (_title, preview) => {
+    h = await harness({ config: { ...jevConfig, defaultMode: 'ask' }, selection: 'Allow this call', editor: (_title, preview) => {
       const context = buildReviewContext(h.ctx, config);
       assert.match(context.transcript, /not final approval or a completed block/);
       assert.doesNotMatch(context.transcript, /already BLOCKED|\\\\"decision\\\\":\\\\"deny/);
@@ -212,7 +228,7 @@ export function registerSafetyTests({ harness, mockDecisions, classification, je
     } });
     assert.equal(await h.call(), undefined);
     assert.doesNotMatch(buildReviewContext(h.ctx, config).transcript, /already BLOCKED/);
-    const noUI = await harness({ config: jevConfig, hasUI: false });
+    const noUI = await harness({ config: { ...jevConfig, defaultMode: 'ask' }, hasUI: false });
     assert.equal((await noUI.call()).block, true);
     assert.equal(noUI.sm.getBranch().at(-1).data.stage, 'final');
     assert.match(buildReviewContext(noUI.ctx, config).transcript, /already BLOCKED/);
@@ -234,7 +250,7 @@ export function registerSafetyTests({ harness, mockDecisions, classification, je
       { select: () => undefined }, { selection: 'Deny' },
       { editor: () => { throw new Error('PRIVATE_UI_ERROR'); } }, { select: () => { throw new Error('PRIVATE_UI_ERROR'); } },
     ]) {
-      const h = await harness({ config: jevConfig, selection: 'Allow this call', ...options });
+      const h = await harness({ config: { ...jevConfig, defaultMode: 'ask' }, selection: 'Allow this call', ...options });
       const result = await h.call();
       assert.equal(result.block, true);
       assert.doesNotMatch(result.reason, /PRIVATE_UI_ERROR/);
@@ -245,7 +261,7 @@ export function registerSafetyTests({ harness, mockDecisions, classification, je
     mockDecisions(t, classification('allow', 0.6));
     for (const kind of ['args', 'id', 'tool', 'cwd', 'session', 'user', 'branch', 'queued-input', 'mode', 'abort', 'arm']) {
       let change;
-      const h = await harness({ config: jevConfig, select: async () => { await change(); return 'Allow this call'; } });
+      const h = await harness({ config: { ...jevConfig, defaultMode: 'ask' }, select: async () => { await change(); return 'Allow this call'; } });
       const event = { toolName: 'bash', toolCallId: 'original-call', input: { command: 'true' } };
       const controller = new AbortController();
       h.ctx.signal = controller.signal;
@@ -315,7 +331,7 @@ export function registerSafetyTests({ harness, mockDecisions, classification, je
     mockDecisions(t, classification('allow', 0.6));
     const inspected = deferred(), close = deferred();
     let number = 0;
-    const h = await harness({ config: jevConfig, selection: 'Allow this call', editor: async (_title, preview) => {
+    const h = await harness({ config: { ...jevConfig, defaultMode: 'ask' }, selection: 'Allow this call', editor: async (_title, preview) => {
       if (++number === 1) { inspected.resolve(); await close.promise; return preview; }
       return undefined;
     } });
