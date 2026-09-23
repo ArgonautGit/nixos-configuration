@@ -141,11 +141,11 @@ in
     enabledModels = [
       # latest deepseek flash (v4.1 at time of writing)
       "~deepseek/deepseek-flash-latest"
-      # fable 5.1
       "openrouter/anthropic/claude-fable-5.1"
-      # codex / gpt-6-astra
-      "openai-codex/gpt-6-astra"
-      # glm 5.3
+      "openrouter/openai/gpt-6-astra"
+      "openrouter/openai/gpt-6-sol"
+      "openrouter/openai/gpt-6-luna"
+      "openrouter/anthropic/claude-opus-5.5"
       "openrouter/z-ai/glm-5.3"
       # local Qwen 3.8 with MTP drafting (see models.json override for the
       # thinking-level map and the 81,920 ctx pin)
