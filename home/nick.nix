@@ -1,4 +1,13 @@
-{ pkgs, ... }:
+{ pkgs, inputs, ... }:
+let
+  # claude-code moves fast (new models land ahead of the stable nixpkgs
+  # branch), so track nixpkgs-unstable for this one package instead of
+  # waiting for the next stable channel bump.
+  pkgs-unstable = import inputs.nixpkgs-unstable {
+    inherit (pkgs) system;
+    config.allowUnfree = true;
+  };
+in
 {
   imports = [
     ./pi.nix
@@ -19,7 +28,7 @@
     kdePackages.kate
     signal-desktop
     parsec-bin
-    claude-code
+    pkgs-unstable.claude-code
   ];
 
   systemd.user.sessionVariables.EDITOR = "nvim";
