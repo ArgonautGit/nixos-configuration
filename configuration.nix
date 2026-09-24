@@ -31,6 +31,7 @@
     ./modules/yazi/yazi.nix
     ./modules/tailscale/tailscale.nix
     ./modules/chatgpt-desktop/chatgpt-desktop.nix
+    ./modules/claude-desktop/claude-desktop.nix
   ];
 
   # Update flake.lock and activate rebuilds manually; this checkout may be
