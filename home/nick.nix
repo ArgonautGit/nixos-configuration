@@ -19,6 +19,7 @@
     kdePackages.kate
     signal-desktop
     parsec-bin
+    claude-code
   ];
 
   systemd.user.sessionVariables.EDITOR = "nvim";
