@@ -1,73 +1,130 @@
-# Claude Desktop for Linux (community-packaged; not in nixpkgs).
+# Claude Desktop for Linux — Anthropic's official Linux beta (Chat, Cowork and
+# Claude Code), repackaged from their apt repository. Not in nixpkgs.
 #
 # Save beside configuration.nix and add this path to its existing imports:
 #   imports = [ ./claude-desktop.nix ];
-# Requires the Nix flakes experimental feature to be enabled when evaluating
-# (already set in this repo's configuration.nix). No additional flake input
-# or specialArgs is required. Requires nixpkgs.config.allowUnfree = true
-# (already set in packages.nix), since the app itself is unfree.
+# Requires nixpkgs.config.allowUnfree = true (already set in packages.nix),
+# since the app itself is unfree.
 #
-# Updates: replace upstream_rev with a reviewed full upstream commit hash,
-# then rebuild. Updating your system flake.lock alone does not update this pin.
-# Source: https://github.com/k3d3/claude-desktop-linux-flake
+# Updates: the app can't self-update from the Nix store. Look up the newest
+# claude-desktop entry (Version + SHA256) in
+#   https://downloads.claude.ai/claude-desktop/apt/stable/dists/stable/main/binary-amd64/Packages
+# set version below, convert the hash with
+#   nix-hash --type sha256 --to-sri <SHA256>
+# and rebuild. Updating your system flake.lock alone does not update this pin.
+# Linux beta limitations: https://code.claude.com/docs/en/desktop-linux
 
-{ pkgs, ... }:
+{ lib, pkgs, ... }:
 
 let
-  # Verified upstream revision from November 25, 2025.
-  upstream_rev = "b2b040cb68231d2118906507d9cc8fd181ca6308";
-  upstream = builtins.getFlake "github:k3d3/claude-desktop-linux-flake/${upstream_rev}";
-  claude-desktop-upstream = upstream.packages.${pkgs.stdenv.hostPlatform.system}.claude-desktop;
+  claude-desktop = pkgs.stdenvNoCC.mkDerivation (finalAttrs: {
+    pname = "claude-desktop";
+    # Verified against the apt index on September 24, 2026.
+    version = "2.7032.0";
 
-  # The upstream Linux stub for the macOS-only `claude-native` module lacks
-  # `AuthRequest`, so "Continue with Google" throws
-  # "Cannot read properties of undefined (reading 'isAvailable')" and spins
-  # forever. Reporting it as unavailable makes the app fall back to opening
-  # the system browser, which returns via the claude:// URL handler.
-  # Drop this once upstream's stub provides AuthRequest.
-  claude-desktop = pkgs.runCommand "claude-desktop-${claude-desktop-upstream.version or "patched"}" {
-    nativeBuildInputs = [ pkgs.asar ];
-    inherit (claude-desktop-upstream) meta;
-  } ''
-    src=${claude-desktop-upstream}
-    mkdir -p $out/lib/claude-desktop $out/bin
-    cp -r $src/share $out/share
+    src = pkgs.fetchurl {
+      url = "https://downloads.claude.ai/claude-desktop/apt/stable/pool/main/c/claude-desktop/claude-desktop_${finalAttrs.version}_amd64.deb";
+      hash = "sha256-Hn9FBLylsvay08QSPRRdcnZH538u4tBGhQcR5h59exE=";
+    };
 
-    asar extract $src/lib/claude-desktop/app.asar app
-    chmod -R u+w app
-    cat >> app/node_modules/claude-native/index.js <<'EOF'
+    nativeBuildInputs = with pkgs; [
+      dpkg
+      makeWrapper
+      autoPatchelfHook
+    ];
 
-// NixOS patch: stub macOS-only ASWebAuthenticationSession binding.
-if (!module.exports.AuthRequest) {
-  module.exports.AuthRequest = { isAvailable: () => false };
-}
-EOF
+    buildInputs = with pkgs; [
+      alsa-lib
+      at-spi2-atk
+      at-spi2-core
+      cairo
+      cups
+      dbus
+      expat
+      glib
+      gtk3
+      libcap_ng
+      libgbm
+      libseccomp
+      libxkbcommon
+      nspr
+      nss
+      pango
+      systemdLibs
+      libx11
+      libxcb
+      libxcomposite
+      libxdamage
+      libxext
+      libxfixes
+      libxrandr
+      stdenv.cc.cc.lib
+    ];
 
-    # The main window is frameless ("hidden" title bar) with window controls
-    # only on Windows, leaving Linux with an empty strip, no buttons and square
-    # corners. On Linux, use the native KDE frame instead (rounded corners,
-    # theme buttons), hide the menu bar until Alt is pressed, and let the
-    # claude.ai view cover the app's now-redundant strip.
-    # The claude.ai view is only re-laid-out on "resize", which Electron on
-    # Linux/X11 doesn't reliably emit for maximize/fullscreen, leaving the
-    # page stuck at its old size in a corner of the window.
-    substituteInPlace app/.vite/build/index.js \
-      --replace-fail 'titleBarStyle:"hidden",titleBarOverlay:Xi,' \
-                     '...(process.platform==="linux"?{autoHideMenuBar:!0}:{titleBarStyle:"hidden",titleBarOverlay:Xi}),' \
-      --replace-fail 'u=e2+(Xi?1:0)' 'u=process.platform==="linux"?0:e2+(Xi?1:0)' \
-      --replace-fail 'e.on("resize",()=>{i(),o()})' \
-                     '["resize","maximize","unmaximize","enter-full-screen","leave-full-screen"].forEach(v=>e.on(v,()=>{i(),o(),setTimeout(()=>{i(),o()},100)}))'
-    asar pack app $out/lib/claude-desktop/app.asar --unpack "*.node"
+    # dlopen()ed at runtime rather than linked, so autoPatchelf can't see them.
+    runtimeLibs = with pkgs; [
+      libGL
+      libnotify
+      libsecret
+      libayatana-appindicator
+      libxtst
+      libuuid
+      pipewire
+      vulkan-loader
+    ];
 
-    # Browsers (e.g. Firefox) launch the claude:// login callback with their
-    # own LD_LIBRARY_PATH, which pulls in a mismatched glibc and makes
-    # Electron abort before it can forward the URL to the running app.
-    substitute $src/bin/claude-desktop $out/bin/claude-desktop \
-      --replace-fail "$src/lib/claude-desktop/app.asar" "$out/lib/claude-desktop/app.asar"
-    sed -i '1a unset LD_LIBRARY_PATH' $out/bin/claude-desktop
-    chmod +x $out/bin/claude-desktop
-  '';
+    dontConfigure = true;
+    dontBuild = true;
+
+    # dpkg-deb -x tries to restore the setuid bit on chrome-sandbox, which the
+    # build sandbox refuses.
+    unpackPhase = ''
+      runHook preUnpack
+      dpkg-deb --fsys-tarfile $src | tar --no-same-permissions --no-same-owner -x
+      runHook postUnpack
+    '';
+
+    installPhase = ''
+      runHook preInstall
+
+      mkdir -p $out/lib $out/bin
+      cp -r usr/lib/claude-desktop $out/lib/claude-desktop
+      cp -r usr/share $out/share
+      rm -rf $out/share/lintian $out/share/doc
+
+      # A setuid helper can't live in the Nix store; without it Chromium uses
+      # its user-namespace sandbox instead.
+      rm $out/lib/claude-desktop/chrome-sandbox
+
+      # --set (not --prefix) so a browser's LD_LIBRARY_PATH can't leak into the
+      # claude:// login callback it launches and break the process.
+      makeWrapper $out/lib/claude-desktop/claude-desktop $out/bin/claude-desktop \
+        --set LD_LIBRARY_PATH "${lib.makeLibraryPath finalAttrs.runtimeLibs}" \
+        --prefix PATH : "${lib.makeBinPath [ pkgs.qemu_kvm pkgs.xdg-utils ]}"
+
+      runHook postInstall
+    '';
+
+    meta = {
+      description = "Claude Desktop (official Linux beta)";
+      homepage = "https://claude.ai/download";
+      license = lib.licenses.unfree;
+      sourceProvenance = [ lib.sourceTypes.binaryNativeCode ];
+      platforms = [ "x86_64-linux" ];
+      mainProgram = "claude-desktop";
+    };
+  });
 in
 {
   environment.systemPackages = [ claude-desktop ];
+
+  # The desktop entry was renamed from claude.desktop (community build).
+  xdg.mime.defaultApplications."x-scheme-handler/claude" = "com.anthropic.Claude.desktop";
+
+  # Cowork's VM hardcodes Debian's UEFI firmware path. The app's asar has
+  # integrity validation enabled, so provide the path rather than patch it.
+  systemd.tmpfiles.rules = [
+    "d /usr/share/OVMF 0755 root root -"
+    "L+ /usr/share/OVMF/OVMF_CODE.fd - - - - ${pkgs.OVMF.fd}/FV/OVMF_CODE.fd"
+  ];
 }
