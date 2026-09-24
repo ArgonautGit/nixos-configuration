@@ -12,6 +12,12 @@
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.home-manager.follows = "home-manager";
     };
+    # Anthropic's apt index for Claude Desktop; `nix flake update` re-locks it
+    # and modules/claude-desktop picks the newest version listed.
+    claude-desktop-apt = {
+      url = "file+https://downloads.claude.ai/claude-desktop/apt/stable/dists/stable/main/binary-amd64/Packages";
+      flake = false;
+    };
   };
 
   outputs = { nixpkgs, home-manager, plasma-manager, ... }@inputs: {

@@ -3,28 +3,54 @@
 #
 # Save beside configuration.nix and add this path to its existing imports:
 #   imports = [ ./claude-desktop.nix ];
-# Requires nixpkgs.config.allowUnfree = true (already set in packages.nix),
-# since the app itself is unfree.
+# Requires the `claude-desktop-apt` input in flake.nix (Anthropic's apt
+# Packages index) and nixpkgs.config.allowUnfree = true (already set in
+# packages.nix), since the app itself is unfree.
 #
-# Updates: the app can't self-update from the Nix store. Look up the newest
-# claude-desktop entry (Version + SHA256) in
-#   https://downloads.claude.ai/claude-desktop/apt/stable/dists/stable/main/binary-amd64/Packages
-# set version below, convert the hash with
-#   nix-hash --type sha256 --to-sri <SHA256>
-# and rebuild. Updating your system flake.lock alone does not update this pin.
+# Updates: the app can't self-update from the Nix store. `nix flake update`
+# (or `nix flake update claude-desktop-apt`) re-locks the apt index; the newest
+# claude-desktop entry in it, with its SHA256, is what gets built.
 # Linux beta limitations: https://code.claude.com/docs/en/desktop-linux
 
-{ lib, pkgs, ... }:
+{ inputs, lib, pkgs, ... }:
 
 let
-  claude-desktop = pkgs.stdenvNoCC.mkDerivation (finalAttrs: {
+  # Parse the Debian Packages index into one attrset per stanza.
+  aptIndex = builtins.readFile inputs.claude-desktop-apt;
+  stanzas = map (
+    stanza:
+    builtins.listToAttrs (
+      map (
+        line:
+        let
+          m = builtins.match "([A-Za-z0-9-]+): (.*)" line;
+        in
+        lib.nameValuePair (builtins.elemAt m 0) (builtins.elemAt m 1)
+      ) (builtins.filter (line: builtins.match "[A-Za-z0-9-]+: .*" line != null) (lib.splitString "\n" stanza))
+    )
+  ) (lib.splitString "\n\n" aptIndex);
+  releases = builtins.filter (s: (s.Package or null) == "claude-desktop" && (s.Architecture or null) == "amd64") stanzas;
+  latest = lib.last (builtins.sort (a: b: builtins.compareVersions a.Version b.Version < 0) releases);
+
+  # dlopen()ed at runtime rather than linked, so autoPatchelf can't see them.
+  runtimeLibs = with pkgs; [
+    libGL
+    libnotify
+    libsecret
+    libayatana-appindicator
+    libxtst
+    libuuid
+    pipewire
+    vulkan-loader
+  ];
+
+  claude-desktop = pkgs.stdenvNoCC.mkDerivation {
     pname = "claude-desktop";
-    # Verified against the apt index on September 24, 2026.
-    version = "2.7032.0";
+    version = latest.Version;
 
     src = pkgs.fetchurl {
-      url = "https://downloads.claude.ai/claude-desktop/apt/stable/pool/main/c/claude-desktop/claude-desktop_${finalAttrs.version}_amd64.deb";
-      hash = "sha256-Hn9FBLylsvay08QSPRRdcnZH538u4tBGhQcR5h59exE=";
+      url = "https://downloads.claude.ai/claude-desktop/apt/stable/${latest.Filename}";
+      sha256 = latest.SHA256;
     };
 
     nativeBuildInputs = with pkgs; [
@@ -61,18 +87,6 @@ let
       stdenv.cc.cc.lib
     ];
 
-    # dlopen()ed at runtime rather than linked, so autoPatchelf can't see them.
-    runtimeLibs = with pkgs; [
-      libGL
-      libnotify
-      libsecret
-      libayatana-appindicator
-      libxtst
-      libuuid
-      pipewire
-      vulkan-loader
-    ];
-
     dontConfigure = true;
     dontBuild = true;
 
@@ -99,7 +113,7 @@ let
       # --set (not --prefix) so a browser's LD_LIBRARY_PATH can't leak into the
       # claude:// login callback it launches and break the process.
       makeWrapper $out/lib/claude-desktop/claude-desktop $out/bin/claude-desktop \
-        --set LD_LIBRARY_PATH "${lib.makeLibraryPath finalAttrs.runtimeLibs}" \
+        --set LD_LIBRARY_PATH "${lib.makeLibraryPath runtimeLibs}" \
         --prefix PATH : "${lib.makeBinPath [ pkgs.qemu_kvm pkgs.xdg-utils ]}"
 
       runHook postInstall
@@ -113,7 +127,7 @@ let
       platforms = [ "x86_64-linux" ];
       mainProgram = "claude-desktop";
     };
-  });
+  };
 in
 {
   environment.systemPackages = [ claude-desktop ];

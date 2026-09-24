@@ -1,5 +1,17 @@
 {
   "nodes": {
+    "claude-desktop-apt": {
+      "flake": false,
+      "locked": {
+        "narHash": "sha256-qIDGpaYPCfviglF7zNtFaitkhqNiAcQR/xbuIWkJIcY=",
+        "type": "file",
+        "url": "https://downloads.claude.ai/claude-desktop/apt/stable/dists/stable/main/binary-amd64/Packages"
+      },
+      "original": {
+        "type": "file",
+        "url": "https://downloads.claude.ai/claude-desktop/apt/stable/dists/stable/main/binary-amd64/Packages"
+      }
+    },
     "flake-utils": {
       "inputs": {
         "systems": "systems"
@@ -132,6 +144,7 @@
     },
     "root": {
       "inputs": {
+        "claude-desktop-apt": "claude-desktop-apt",
         "home-manager": "home-manager",
         "lazyvim": "lazyvim",
         "nixpkgs": "nixpkgs_2",
